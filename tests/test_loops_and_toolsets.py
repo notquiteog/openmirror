@@ -170,9 +170,11 @@ async def test_every_group_names_tools_that_exist():
     # These are only present when their capability is attached, which a plain
     # session has none of. `lsp` is one of them: it exists only where a
     # language server is installed, and a plain session is given none.
+    # `mail` is the same shape — the tool exists only where a mailbox is
+    # configured, so a plain session has no `mail` to narrow to.
     optional = set(TOOLSETS['browser']) | set(TOOLSETS['desktop']) | set(TOOLSETS['media'])
     optional |= set(TOOLSETS['memory']) | set(TOOLSETS['web']) | set(TOOLSETS['system'])
-    optional |= {'lsp'}
+    optional |= {'lsp'} | set(TOOLSETS['mail']) | set(TOOLSETS['calendar'])
 
     for group, names in TOOLSETS.items():
         for name in names:

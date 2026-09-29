@@ -1,10 +1,10 @@
 # Running it autonomously
 
 openmirror will do whatever you configure it to do. This page is about what the
-switches actually mean, because two of them are not the same decision even
+switches actually mean, because three of them are not the same decision even
 though they look adjacent.
 
-## The two axes
+## The three axes
 
 **`OPENMIRROR_APPROVAL_MODE`** is about *this machine*.
 
@@ -16,13 +16,61 @@ though they look adjacent.
 | `trusted` | reads, writes, commands, network |
 | `unrestricted` | everything above, including destructive |
 
-**`OPENMIRROR_ALLOW_PURCHASES`** and **`OPENMIRROR_ALLOW_CREDENTIALS`** are not on that
-scale, and deliberately so. `unrestricted` means *stop asking me about this
-machine*. It is not the sentence *spend my money*, and if one switch bought
-both, everybody who wanted the first would get the second by accident.
+**`OPENMIRROR_ALLOW_PURCHASES`**, **`OPENMIRROR_ALLOW_CREDENTIALS`** and
+**`OPENMIRROR_ALLOW_MESSAGES`** are not on that scale, and deliberately so.
+`unrestricted` means *stop asking me about this machine*. It is not the
+sentence *spend my money*, and if one switch bought both, everybody who wanted
+the first would get the second by accident.
 
-So no approval mode auto-runs a purchase. You turn that on separately, in
-full knowledge of what you are turning on.
+So no approval mode auto-runs a purchase, and none auto-sends mail. You turn
+each on separately, in full knowledge of what you are turning on.
+
+### What sending mail is, and why it is its own axis
+
+Reading an inbox is `read` and runs in every mode — an agent that cannot read
+your mail cannot answer it, and that is the entire feature. *Answering* is
+`Risk.MESSAGE`, and it behaves exactly like a purchase:
+
+* **Never automatic, in any mode, including `unrestricted`.** The reason is
+  not that it is as dangerous as spending money. It is that the recipient is
+  a person who cannot see this conversation, cannot consent to it, and cannot
+  take it back. A purchase is recoverable in a way a message is not.
+* **Never remembered.** A remembered approval is a fingerprint of the exact
+  arguments, so a "yes" to *reply to Alice about the invoice* would carry over
+  to the *next* message to Alice — a different message, saying a different
+  thing, composed by a model that has since read different mail. What was
+  agreed to was one message, not a channel to a person.
+* **No rule can allow it.** A rule is a reasonable thing to write in order to
+  stop being asked about `npm test`; read as a mail exemption it is a line
+  that removes the only prompt between an unattended agent and somebody's
+  outbox. A rule may still *deny* — it can take freedom away, never hand it
+  out.
+* **The approval prompt is the review.** Recipient, subject, and the opening
+  of the body, in that order, because that is the order mistakes are made in.
+  A summary that says "send a message" is not a review.
+
+`OPENMIRROR_ALLOW_MESSAGES=false` turns a send into a *refusal* rather than a
+prompt, for an install that should not be able to put words in somebody's
+inbox at all. Nothing to click is a stronger guarantee than a yes/no whose
+default is no.
+
+### The two AI buttons, and why they are two buttons
+
+"Write it for me" in the Commit bar and in the Mail pane both do the same
+thing: read the thing being worked on, send it to whichever model this install
+routes chat to, and put a draft in a field a person can read. Neither commits
+and neither sends. There is no `ai: true` that drafts *and* does the thing, on
+purpose — a flag like that gets set once and then nobody reads the messages
+again, and a commit message is the one artefact of a piece of work that
+outlives it.
+
+What reaches a provider is the minimum that answers the question. A draft reply
+sends the one message being answered, not the account's history and not any
+other thread: the difference between a provider seeing one message and seeing
+an inbox. A commit draft sends the *staged* diff, not everything that changed,
+because a person about to commit three of eleven changed files should be shown
+a description of three files.
+
 
 ## Confinement
 

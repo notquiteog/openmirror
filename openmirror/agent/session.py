@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from openmirror.agent import prompt as prompt_mod
+from openmirror.agent import windows
 from openmirror.agent.approval import ApprovalPolicy, Decision, Mode
 from openmirror.agent.tasks import TaskBoard
 from openmirror.agent.tools.base import FILE_WRITERS, Assessment, Output, Tool, ToolContext, ToolError, truncate
@@ -344,6 +345,11 @@ class AgentSession:
         self._turn_start = 0
         # Input tokens of the last request, as the provider counted them.
         self._last_input = 0
+        # Cumulative for the session, from the provider's own accounting. Two
+        # counters and no money: a dollar figure is out of date the moment a
+        # provider changes a price, and somebody reads it as a bill.
+        self._total_in = 0
+        self._total_out = 0
         # Set once a turn has been compacted, so a turn that is large on its
         # own does not summarise the summary on every step.
         self._fresh_summary = False
@@ -678,8 +684,17 @@ class AgentSession:
         if self.checkpoints is not None:
             self.checkpoints.commit()
 
+        # The context report is computed here rather than on request because
+        # the point is to know it at the moment the turn ended — "how full was
+        # it before that" is a different and much less useful number.
         await self._emit(
-            TurnCompleted(session_id=self.id, turn_id=turn_id, stop_reason=stop_reason, usage=usage_total)
+            TurnCompleted(
+                session_id=self.id,
+                turn_id=turn_id,
+                stop_reason=stop_reason,
+                usage=usage_total,
+                context=self.context_report(),
+            )
         )
 
     async def _loop(self, turn_id: str, usage: dict[str, int]) -> str:
@@ -696,6 +711,8 @@ class AgentSession:
 
             for key in usage:
                 usage[key] += done.usage.get(key, 0)
+            self._total_in += done.usage.get('input_tokens', 0) or 0
+            self._total_out += done.usage.get('output_tokens', 0) or 0
             if done.usage.get('input_tokens'):
                 self._last_input = done.usage['input_tokens']
 
@@ -1034,6 +1051,36 @@ class AgentSession:
         return None, ''
 
     # -- compaction ---------------------------------------------------------
+
+    def context_report(self) -> Any:
+        """How full the context is, and how far from being summarised.
+
+        `tokens` prefers the provider's own last input count when there is one,
+        because that is the number the model actually saw and the estimate is
+        four-characters-to-a-token. `exact` says which it is, so the interface
+        can stop drawing a precise-looking bar over a guess.
+
+        `window` is looked up by name and is `None` when it is not recognised.
+        That is the honest answer for a model this table has never heard of,
+        and a wrong number here is a wrong percentage on a bar somebody is
+        deciding whether to keep working against.
+        """
+        from openmirror.protocol.agent import ContextUse
+
+        # The larger of the two, because they disagree: the estimate counts
+        # what is queued and the provider counted what it was sent, and the
+        # difference between them is usually a turn's worth of tool output
+        # that has not been summarised yet.
+        estimate = self._estimate()
+        tokens = max(self._last_input, estimate)
+        return ContextUse(
+            tokens=tokens,
+            limit=self.compact_at,
+            window=windows.context_window(self.model),
+            total_in=int(getattr(self, '_total_in', 0)),
+            total_out=int(getattr(self, '_total_out', 0)),
+            exact=bool(self._last_input) and self._last_input >= estimate,
+        )
 
     def _estimate(self) -> int:
         """Roughly how many tokens the next request will be.

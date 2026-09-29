@@ -1,4 +1,4 @@
-/* Which of the six things this is being right now.
+/* Which of the seven things this is being right now.
  *
  * A body class, and one event. Everything else — which pane is visible, which
  * rail item is current, whether the composer exists — falls out of CSS, so
@@ -8,9 +8,14 @@
  * that is the part that matters: a voice call left running because someone
  * clicked away from it is a microphone left open, and an autopilot frame
  * stream left running is a screen being captured for nobody.
+ *
+ * `mail` is on the same list as everything else rather than being a dialog,
+ * for the reason the others are modes: it is a different kind of attention,
+ * and switching to it should not be possible to do halfway through reading a
+ * message.
  */
 
-const MODES = ['code', 'talk', 'live', 'watch', 'studio', 'search'];
+const MODES = ['code', 'talk', 'live', 'watch', 'studio', 'search', 'mail'];
 const STORE = 'openmirror.mode';
 
 const entering = new Map();

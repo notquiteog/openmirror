@@ -1,4 +1,4 @@
-# The six modes
+# The seven modes
 
 Not tabs over a shared workspace. Typing at an agent, talking to one, and
 watching one work are different kinds of attention, and a layout that keeps a
@@ -141,3 +141,67 @@ not have to cost a model turn.
 Results can be read in place, through the same fetch the agent uses — so the
 private-address guard applies to a person clicking a link, not only to a model
 following one.
+
+
+## Mail
+
+Your inbox, opened without leaving what you were doing. Folders with unread
+counts, a list, a reader, and a composer.
+
+It is a mode rather than a dialog for the reason the others are: reading a
+message is a different kind of attention from writing to an agent about it,
+and switching to it should not be possible halfway through a reply.
+
+Three things it does that a mail client does not:
+
+* **The agent reads the same inbox.** The `mail` tool and this pane are two
+  doors onto one store, so "what came in today" costs you nothing and "draft
+  a reply to the Acme thread" costs the agent one turn. Neither is a copy of
+  the other, and nothing is cached twice.
+* **"Write it for me" fills the composer and stops.** It sends the one
+  message being answered to whichever model this install routes chat to, and
+  puts a draft in a box that is already open, already addressed and already
+  subject-lined. Sending is a separate button on purpose — see
+  [AUTONOMY.md](AUTONOMY.md).
+* **Listing a folder does not mark it read.** The server uses `BODY.PEEK` and
+  the `$seen` keyword is only touched when you open a message, so the unread
+  count is still true after you have looked through the list.
+
+## Where the commit bar lives
+
+Not a mode — it is in the Code header, and it only appears when your working
+root is a git repository with something in it. It counts *changed files* rather
+than lines, because that is the number that answers "is there anything to do
+here", and a diffstat of a reformat is large and says nothing.
+
+The two buttons are the design. "Write it for me" reads the **staged** diff —
+what a commit would contain, not everything that changed, and usually not the
+half that does not compile yet — and puts a draft in the message field.
+"Commit" sends the message in the field at that moment, which may be that
+draft, an edit of it, or something typed from nothing.
+
+Nothing is staged for you. `git add` is a checkbox per file and there is a
+button for all of them, and both of those are things you press.
+
+## Updates, the context meter, and `@`
+
+Not modes, and not a tab. Three small things that live in the places you would
+look for them.
+
+**The update dot** is on the Updates tab in Settings, and nowhere else. A
+banner would be more noticeable and would also be dismissed without being
+read, which for a message that says "a new version exists" is the most likely
+outcome. The tab dot says the same thing without taking anything away, and
+Settings → Updates is where the release notes are.
+
+**The context meter** is under the composer, beside the thing that would
+change it. The number is exact; the bar appears only when there is a
+denominator. It fills towards the point the conversation will be summarised
+rather than towards the model's window, because that is the one the session
+will actually hit. Clicking it is the same as typing `/compact`.
+
+**`@` in the composer** opens the files in the working root, ranked. Enter
+completes a partial name and sends a finished one — the same rule the slash
+menu uses and for the same reason: `@app` then Enter means the file, and
+`@src/app.js` then Enter means send it. Escape closes the list and keeps the
+text.

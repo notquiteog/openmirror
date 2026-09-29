@@ -15,6 +15,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from openmirror.agent import windows
 from openmirror.agent.approval import Mode
 from openmirror.agent.manager import manager
 from openmirror.config import config
@@ -30,8 +31,15 @@ router = APIRouter()
 http = APIRouter(prefix='/api/sessions')
 
 
-async def _resolve_chat(provider: str | None, model: str | None) -> tuple[object, str, str]:
-    """Pick the chat provider and a concrete model. Raises NoProviderError."""
+async def resolve_chat(provider: str | None = None, model: str | None = None) -> tuple[object, str, str]:
+    """Pick the chat provider and a concrete model. Raises NoProviderError.
+
+    Shared rather than private, because the two other places that need a model
+    for a single turn — the commit-message draft in `routers/git.py` and the
+    reply draft in `routers/mail.py` — need exactly this and nothing else. A
+    second copy of "or ask the provider what it has" is a second copy of the
+    reason the fallback exists, and one of them will be the one that forgets.
+    """
     routes = RouteSet(routes={Modality.CHAT: Route(provider=provider, model=model or '')}) if provider else None
     impl, route, info = registry.resolve(Modality.CHAT, routes)
 
@@ -55,6 +63,11 @@ async def _resolve_chat(provider: str | None, model: str | None) -> tuple[object
                 f'{info.id} has no model that can hold a conversation. It offers: {names}'
             )
     return impl, chosen, info.id
+
+
+# Kept as a private alias so the many call sites inside this module read the
+# same as they did before this was shared.
+_resolve_chat = resolve_chat
 
 
 class CreateSession(BaseModel):
@@ -122,6 +135,25 @@ async def list_sessions() -> dict[str, object]:
     return {'sessions': manager.list()}
 
 
+@http.get('/{session_id}/context')
+async def session_context(session_id: str) -> dict[str, object]:
+    """How full this session's context is, and how far from being summarised.
+
+    Not in the `list`, because it is not a property of a session at rest — it
+    changes with every tool result — and a list polled every few seconds
+    should not re-estimate every transcript in the sidebar.
+    """
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    report = session.context_report()
+    return {
+        **report.model_dump(),
+        'fraction': windows.window_fraction(report.tokens, report.limit, report.window),
+        'model': session.model,
+    }
+
+
 @http.get('/toolsets')
 async def list_toolsets() -> dict[str, object]:
     """The groups a session can be narrowed to, and what is in each."""
@@ -137,6 +169,29 @@ async def list_commands(session_id: str) -> dict[str, object]:
     if session is None:
         raise HTTPException(status_code=404, detail='no such session')
     return {'commands': session.commands()}
+
+
+@http.get('/{session_id}/files')
+async def find_files(session_id: str, q: str = '', limit: int = 40) -> dict[str, object]:
+    """Files to offer after an `@` in the composer.
+
+    Bounded by a time budget and a count, and it never reads a file — only
+    names, sizes and times. The person is still typing, and a suggestion list
+    that takes a second to appear is a suggestion list that is wrong by the
+    time it lands.
+    """
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    import asyncio
+
+    from openmirror.agent import files as finder
+
+    # The walk is blocking and is on the request path behind a keystroke, so
+    # it goes to a thread rather than stalling the event loop the websocket
+    # for the very session it belongs to.
+    hits = await asyncio.to_thread(finder.find, session.root, q, limit=limit)
+    return {'files': hits, 'root': str(session.root)}
 
 
 @http.get('/{session_id}/tasks')

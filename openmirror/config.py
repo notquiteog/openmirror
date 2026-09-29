@@ -99,6 +99,75 @@ class Config:
     # prompt, for an install that should not be able to do it at all.
     allow_purchases: bool = field(default_factory=lambda: _bool('OPENMIRROR_ALLOW_PURCHASES', True))
     allow_credentials: bool = field(default_factory=lambda: _bool('OPENMIRROR_ALLOW_CREDENTIALS', True))
+    # Sending mail as this person. A third axis rather than part of the mode
+    # ladder, and off-by-default-off only in the sense that a person who wants
+    # an agent handling their correspondence has to say so once: a read-only
+    # install never offers the tool, and every send is confirmed in every
+    # mode, so the worst case is a prompt.
+    allow_messages: bool = field(default_factory=lambda: _bool('OPENMIRROR_ALLOW_MESSAGES', True))
+
+    # --- calendar -----------------------------------------------------------
+    # `.ics` files, read from a directory. Off by default: a folder nobody has
+    # put anything in offers nothing, and a tool that can only fail is worse
+    # than no tool. See openmirror/calendar/store.py.
+    calendar_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_CALENDAR'))
+    calendar_dir: Path = field(
+        default_factory=lambda: Path(os.getenv('OPENMIRROR_CALENDAR_DIR', ''))
+        if os.getenv('OPENMIRROR_CALENDAR_DIR')
+        else Path(os.getenv('OPENMIRROR_DATA_DIR', './data')) / 'calendars'
+    )
+    # Working hours for "when am I free". In the server's local zone, which is
+    # the zone the person is in on the machine this runs on — the honest
+    # default, and wrong for a server that is not on their desk, which is why
+    # it is a setting.
+    calendar_hours_start: str = field(default_factory=lambda: os.getenv('OPENMIRROR_CALENDAR_START', '09:00'))
+    calendar_hours_end: str = field(default_factory=lambda: os.getenv('OPENMIRROR_CALENDAR_END', '17:00'))
+
+    # --- mail --------------------------------------------------------------
+    # Mail accounts live in a file of their own rather than in the
+    # environment, because there is more than one of them and because adding
+    # one should not need a restart. See openmirror/mail/accounts.py — the
+    # store is the same shape as provider connections, 0600, and no route ever
+    # returns a password.
+    mail_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_MAIL'))
+    mail_accounts: Path = field(
+        default_factory=lambda: Path(os.getenv('OPENMIRROR_MAIL_ACCOUNTS', ''))
+        if os.getenv('OPENMIRROR_MAIL_ACCOUNTS')
+        else Path(os.getenv('OPENMIRROR_DATA_DIR', './data')) / 'mail.json'
+    )
+    # A single account described entirely by environment variables, folded
+    # into the store on first use. For an install managed by a file, so that
+    # configuring a mailbox does not mean writing a second file with a
+    # password in it. The password is referenced by variable name, never
+    # copied into the store.
+    mail_address: str = field(default_factory=lambda: os.getenv('OPENMIRROR_MAIL_ADDRESS', ''))
+    mail_password_env: str = field(default_factory=lambda: os.getenv('OPENMIRROR_MAIL_PASSWORD_ENV', 'OPENMIRROR_MAIL_PASSWORD'))
+    mail_imap_host: str = field(default_factory=lambda: os.getenv('OPENMIRROR_MAIL_IMAP_HOST', ''))
+    mail_smtp_host: str = field(default_factory=lambda: os.getenv('OPENMIRROR_MAIL_SMTP_HOST', ''))
+    # `jmap` to read and send over JMAP, `imap` to force IMAP, empty to take
+    # whichever is configured. Both are supported per account and an account
+    # may have the two configured independently.
+    mail_protocol: str = field(default_factory=lambda: os.getenv('OPENMIRROR_MAIL_PROTOCOL', ''))
+
+    # --- updates ------------------------------------------------------------
+    # Ask GitHub whether there is a newer release. On, once a day at most, and
+    # the answer is only ever shown — nothing is downloaded without somebody
+    # asking, and nothing is installed without somebody confirming. See
+    # openmirror/update.py, which explains why this is a checksum rather than
+    # a signature and why it is not Tauri's own updater.
+    update_check_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_UPDATE_CHECK', True))
+    # Check on start-up rather than waiting to be asked. Off by default: a
+    # process that makes a network call nobody asked for, before anybody has
+    # seen the window, is the behaviour people notice first and forgive last.
+    update_check_on_start: bool = field(default_factory=lambda: _bool('OPENMIRROR_UPDATE_CHECK_ON_START'))
+    # Where a downloaded installer waits. Under the data directory, never
+    # somewhere the agent's file tools can reach — a 90MB disk image inside a
+    # working root gets read, grepped and eventually committed.
+    update_staging: Path = field(
+        default_factory=lambda: Path(os.getenv('OPENMIRROR_UPDATE_DIR', ''))
+        if os.getenv('OPENMIRROR_UPDATE_DIR')
+        else Path(os.getenv('OPENMIRROR_DATA_DIR', './data')) / 'updates'
+    )
 
     # --- the web ----------------------------------------------------------
     web_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_WEB', True))
@@ -142,6 +211,12 @@ class Config:
         default_factory=lambda: Path(os.getenv('OPENMIRROR_LSP_CONFIG', '')) if os.getenv('OPENMIRROR_LSP_CONFIG')
         else Path.cwd() / '.lsp.json'
     )
+    # The model's context window, when the provider will not say and the name
+    # is not one this project recognises. 0 means "use what is known, and show
+    # a token count with no percentage" — which is the honest default, because
+    # a wrong denominator is a bar somebody makes decisions with. See
+    # openmirror/agent/windows.py.
+    context_window: int = field(default_factory=lambda: _int('OPENMIRROR_CONTEXT_WINDOW', 0))
     # When the conversation is summarised to make room, in estimated tokens.
     # Checked at the start of each request, and it only ever summarises what
     # came *before* the current turn, so the work in hand is never cut in half.
@@ -344,6 +419,20 @@ class Config:
     default_user: str = field(default_factory=lambda: os.getenv('OPENMIRROR_USER', 'local'))
 
     log_level: str = field(default_factory=lambda: os.getenv('OPENMIRROR_LOG_LEVEL', 'INFO'))
+
+    @property
+    def is_frozen(self) -> bool:
+        """Whether this is the frozen daemon inside the desktop app.
+
+        Which decides whether an update is even applicable: a PyInstaller
+        bundle cannot be replaced in place by this process, so the updater
+        stages an installer and hands it to the app. A `pip install` can be
+        upgraded by running pip, and the message saying so is more useful than
+        an installer for a platform that is not there.
+        """
+        import sys as _sys
+
+        return bool(getattr(_sys, 'frozen', False)) or 'PyInstaller' in _sys.modules
 
 
 config = Config()

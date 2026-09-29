@@ -199,7 +199,9 @@ person until they turn it on themselves. Everything stored is listed, any of
 it can be deleted, and all of it can be. See [docs/MEMORY.md](docs/MEMORY.md).
 
 The modes are described in [docs/MODES.md](docs/MODES.md) and the providers,
-routing and Tor in [docs/PROVIDERS.md](docs/PROVIDERS.md).
+routing and Tor in [docs/PROVIDERS.md](docs/PROVIDERS.md). Mail has its own
+page — [docs/MAIL.md](docs/MAIL.md) — because why IMAP rather than a vendor
+API, and what `threadId` is worth, do not fit in a paragraph.
 
 **The web, and a real browser.** `web_search` and `web_fetch` for reading,
 `research` for answering — several searches and the pages behind them in one
@@ -338,13 +340,94 @@ an MCP call has no human in front of it. See
 **Rewind.** Every turn that changes a file can be undone, including one that
 was interrupted halfway. See [docs/EXTENDING.md](docs/EXTENDING.md).
 
+### Your mail, your repository, your week
+
+Three things an agent needs to work *for* you rather than *near* you, each
+reachable from a tool and from the interface, over the same accounts and the
+same store — so the agent and the browser are two doors onto one
+implementation, not two implementations.
+
+**Mail, over IMAP or JMAP.** One `mail` tool and one Mail tab, both speaking
+whatever your host speaks: Gmail, Outlook, currere.co, Fastmail, Proton. No
+OAuth dance per vendor, because IMAP and JMAP are both in the standard
+library and both are what these hosts already run — the cost is an app
+password, which is five minutes in a settings page and a much smaller thing to
+go wrong than a refresh token that silently stops working.
+
+Reading is `read` and runs in every mode. *Answering* is a third invariant
+alongside purchases and credentials: possible, and never automatic, in every
+mode including `unrestricted`, and never remembered — a "yes" to one reply is
+not a "yes" to the next one to the same person. Replies carry
+`In-Reply-To` and `References`, so they land in the thread rather than beside
+it, and a draft goes to your own Drafts folder where your mail client can see
+it.
+
+JMAP is preferred where it is available, for two reasons that are not
+performance: `threadId` is the *server's* answer to which conversation a
+message belongs to, and IMAP has no such field, so the IMAP path reconstructs
+it from `References` and a normalised subject — right most of the time and
+visibly wrong some of the time.
+
+**A repository it can read, and a commit you can make.** The `git` tool
+parses `--porcelain=v2` rather than asking a model to read porcelain, so
+`git status` is a grouped list instead of a blob of two-column text. A commit
+is `write`, which means it is *asked about* in `ask` mode instead of being
+graded `execute` and lumped in with `npm run build`. There is deliberately no
+`reset --hard` or `clean -f` in the tool: both are one `shell` call away,
+already graded `destructive` there, and a foot-gun does not belong in a
+first-class tool.
+
+The Commit bar in the header follows your working root and only appears when
+there is a repository with something in it. Its two buttons are the whole
+design: **"Write it for me"** reads the staged diff, sends it to whichever
+model this install routes chat to, and puts a draft in the message field — and
+**"Commit"** sends whatever is in the field at that moment. A single button
+with an `ai: true` flag would be one click instead of two, and nobody would
+read the messages after the first week, and the commit message is the one
+artefact of a piece of work that outlives it.
+
+**A week, and where there is room in it.** The `calendar` tool reads `.ics`
+files — no dependency, because the format is a line-oriented text format with
+a folding rule and a date grammar, and the awkward parts are all in one file:
+`DTEND` is exclusive so back-to-back meetings are not a clash, `VALUE=DATE` is
+a whole day rather than midnight, folding is at 75 *octets* so an emoji in a
+subject survives, and a `TZID` the system does not know stays floating rather
+than being assumed UTC. `availability` answers "when can we meet" from *merged*
+busy blocks, so three meetings in a row produce one hole rather than two
+imaginary ones. Nothing is ever written to a calendar: `propose` returns
+`.ics` text and stops.
+
+**Updates, from GitHub.** Settings → Updates checks for a newer release and
+tells you: a dot on the tab, and nothing else. Downloading waits for a button
+press, and installing waits for a confirmation, because a message that appears
+over work you are doing is a message that gets dismissed without being read.
+A downloaded installer is checked against the SHA256 published in the same
+release before it is offered to run — an integrity check rather than a
+signature, and [docs/UPDATES.md](docs/UPDATES.md) says exactly what that does
+and does not catch. A stable install is never offered a release candidate.
+
+**How full the conversation is.** A count under the composer, and a bar when
+there is a denominator to draw it against. The count is real; the bar is
+`None` for a model this project has not heard of, because a bar at 40% on a
+model that will refuse the request is worse than no bar. It fills towards the
+point the conversation gets *summarised*, which is the number that decides
+whether to keep going. There is no cost in dollars: a price is out of date the
+moment a provider changes one, and somebody reads a stale number as a bill.
+
+**`@` for a file.** Type it in the composer and a list of files in the working
+root appears, ranked so the one you meant is first. Enter completes a partial
+name and sends a finished one. Dotfiles, `.git` and anything over 2MB are not
+offered, and the walk is bounded by time as well as count, because you are
+still typing.
+
 **Full system access, if you want it.** `OPENMIRROR_UNCONFINED=true` gives it the
 whole filesystem and tells the model plainly that it is not sandboxed.
-Purchases and credentials stay on their own axis — see
+Purchases, credentials and sending mail stay on their own axis — see
 [docs/AUTONOMY.md](docs/AUTONOMY.md), which is the page to read before running
 this unattended.
 
 ## What this is built for
+
 
 ### The floor: a model *and* a tool budget
 
@@ -486,6 +569,39 @@ Three things that only a live model found, all now fixed and pinned by tests:
 
 ## What is not built yet
 
+**Employee management is not integrated.** There is no BambooHR, Gusto, Rippling
+or Workday connector, and no time-off request workflow, and that is a decision
+rather than an oversight worth hiding: every one of those is a vendor's own
+API with its own scopes and its own rate limits, and a wrong guess at any of
+them is a system that reads a payroll. What *is* built is the part that does
+not need a vendor — the memory store can already hold "how they answer a time
+off request" as an ordinary remembered fact, and the approval policy already
+grades the irreversible half. When a connector is added it plugs in behind the
+same tool, and the memory it reads is already there.
+
+**Mail is IMAP and JMAP, not OAuth.** Which means app passwords rather than
+delegated access, so it cannot read a mailbox it was not given a password for,
+and cannot revoke itself. The cost is real: an app password is a long-lived
+secret in a file, and rotating it is a manual job. The alternative is three
+OAuth dances, three token refreshers and three client libraries, and a vendor
+that renames an endpoint then breaks the feature for everyone on it.
+
+**Calendar subscriptions are fetch-and-merge, not sync.** A subscribed
+calendar is downloaded and merged on its `UID`, so an event *removed* upstream
+survives until the cache is deleted. Making it match would need a sync token
+per host, and a wrong token is a calendar that quietly stops updating. Local
+files are never touched: `propose` returns `.ics` text and stops, because an
+agent that can put an event into a calendar can put one in at three in the
+morning on a Sunday.
+
+**Bookings and travel are still the browser.** There is no hotel API, no
+flight search and no checkout of its own. The harness will book a hotel to the
+point of paying, in a real browser, and the final button is refused in every
+mode — see [docs/AUTONOMY.md](docs/AUTONOMY.md). That is deliberate for now:
+the only part worth automating past "fill in the form" is the part that spends
+money, and a vendor API for it would be a much larger thing to get right than
+a click on the page the hotel already has.
+
 Video generation still needs a ComfyUI workflow template per model, and none
 ship — but bringing one is now a command rather than an editing job: export
 your graph with **Save (API format)**, import it, and the prompt, seed, size
@@ -600,12 +716,13 @@ by reflex, which is worse: a policy answered without being read is a policy
 that does nothing while claiming to. `ask_user` is never auto-answered, in any
 mode.
 
-Note what is in none of those rows: **purchases and credentials**. They are
-not on that ladder at all — they are a second axis, and both are *on*, because
-a harness meant to finish a real task has to be able to reach the end of one.
-It can buy things. It can type a password, a card number or a one-time code.
+Note what is in none of those rows: **purchases, credentials, and sending
+mail**. They are not on that ladder at all — they are their own axes, and all
+three are *on*, because a harness meant to finish a real task has to be able
+to reach the end of one. It can buy things. It can type a password, a card
+number or a one-time code. It can answer your email.
 
-What it cannot do is either of them without you.
+What it cannot do is any of them without you.
 
 A purchase is confirmed **in every mode, including `unrestricted`, and
 including an autopilot run nobody is watching**. There is no setting that
@@ -615,6 +732,18 @@ remembered either: "don't ask again" about spending money is the one answer
 nobody should be able to give once. `OPENMIRROR_ALLOW_PURCHASES=false` turns a
 purchase into a refusal rather than a prompt, for an install that should not
 be able to buy anything at all.
+
+**Sending mail is the same shape, and the same reason.** Reading your inbox is
+a read and runs everywhere, because an agent that cannot read your mail cannot
+answer it. *Sending* is a third invariant: confirmed in every mode, never
+remembered, never grantable by a rule. The reason is not the amount of money
+involved — it is that the recipient is a person who cannot see this
+conversation, cannot consent to it, and cannot take it back. A remembered
+approval would be worse here than for a purchase, because it is a fingerprint
+of the exact message: a "yes" to one reply to Alice would carry over to the
+next one, which is a different message saying a different thing.
+`OPENMIRROR_ALLOW_MESSAGES=false` turns a send into a refusal rather than a
+prompt.
 
 And a secret never becomes readable by anything else. Not in the approval
 prompt, not in the tool result, not in the transcript, and not in the page
@@ -654,7 +783,7 @@ meant to be that server.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-394 tests. Some groups carry more weight than the rest.
+1293 tests. Some groups carry more weight than the rest.
 
 The shell risk classifier is tested as the security control it is: every case
 is a regression guard, and a change that moves any of them out of
@@ -667,6 +796,38 @@ privacy property costs nothing in recall quality.
 The browser tests are the ones standing between an autonomous agent and your
 card: every buying-button phrasing and every secret-field name is a case, and
 each was written after watching the classifier miss something real.
+
+The git and calendar tests run against a **real** repository and a **real**
+`.ics` file, because both are mostly parsers and a parser tested against a
+mock is only tested against the mock. The JMAP tests run against a real
+`aiohttp` server speaking the actual protocol — that one earned its keep
+immediately, finding that a JMAP batch is `[name, args, callId]` arrays
+rather than objects, that a failed call comes back inside a `200` response,
+and that `Blob/set` wants base64url rather than bytes. Each of those was a
+send that would have failed at the last step with nothing about the body in
+the message.
+
+The approval tests for mail assert through the real `ApprovalPolicy` rather
+than the tool, because the property that matters is not what a send calls
+itself — it is that no mode, no rule and no remembered approval can turn it
+into silence.
+
+**The frame budget is measured, not asserted.** `test_live_frames.py` drives
+a real turn against a real provider in a real browser, on a transcript of 850
+turns, and times the frames: median 16.7ms, p99 16.8ms, nothing over 20ms.
+It also samples the node count *during* the turn, because the first version
+of it passed while measuring two nodes — creating the session over HTTP left
+the page to clear the transcript before the turn started, and a test that
+trusted the count at the end would have been measuring nothing.
+`test_scroll_coalescing.py` lifts the real scroll-follow out of `app.js` and
+proves it reads the layout once per frame rather than once per append, which
+is the change that number depends on and which a real turn cannot distinguish.
+
+`test_static_modules.py` parses every shipped `.js` file as a module and links
+the page graph. That is not ceremony: `mail.js` once imported `send` from
+`dom.js` and declared its own `send()`, which is an early error rather than a
+runtime one, and the result was `Identifier 'send' has already been declared`
+on load — a blank page, from a change that every text-based test passed.
 
 `test_booking_walkthrough.py` is end to end and has no mocks below the
 provider: a real Xvfb display, a real Chromium launched onto it, a real

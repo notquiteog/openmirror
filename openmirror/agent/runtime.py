@@ -17,6 +17,7 @@ from openmirror.agent.tools.ask import AskUserTool
 from openmirror.agent.tools.base import FILE_WRITERS, Tool
 from openmirror.agent.tools.code import ApplyPatchTool, MultiEditTool, OutlineTool, ReadFilesTool
 from openmirror.agent.tools.files import EditTool, ListDirTool, ReadTool, WriteTool
+from openmirror.agent.tools.git import GitTool
 from openmirror.agent.tools.notebook import NotebookEditTool
 from openmirror.agent.tools.planning import ProposePlanTool
 from openmirror.agent.tools.search import GlobTool, GrepTool
@@ -39,6 +40,14 @@ TOOLSETS: dict[str, tuple[str, ...]] = {
     'files': ('read_file', 'read_files', 'write_file', 'edit_file', 'multi_edit',
               'apply_patch', 'notebook_edit', 'outline', 'list_dir', 'glob', 'grep', 'lsp'),
     'shell': ('shell', 'tasks'),
+    # Version control, and not inside `shell`: the grades differ, and a
+    # project session is the one place where every turn starts by asking what
+    # has changed.
+    'git': ('git',),
+    # Mail. Offered only when an account is configured, because a `mail` tool
+    # on a machine with no mailbox is a tool that can only fail.
+    'mail': ('mail',),
+    'calendar': ('calendar',),
     'todo': ('todo',),
     'agents': ('agent',),
     'skills': ('skill',),
@@ -86,9 +95,46 @@ def default_tools() -> list[Tool]:
         GrepTool(),
         ShellTool(),
         TasksTool(),
+        GitTool(),
         TodoTool(),
         AskUserTool(),
     ]
+
+
+def calendar_tools(cfg: Any) -> list[Tool]:
+    """The `calendar` tool, when this install has somewhere to read one from.
+
+    Offered whenever calendar support is on, rather than only when the folder
+    has files in it: the folder is usually empty on a fresh install and gets
+    its first calendar within a day, and a tool that appears the moment a file
+    lands is a tool the model has never seen in a schema it was told about.
+    """
+    if not getattr(cfg, 'calendar_enabled', False):
+        return []
+    from openmirror.agent.tools.calendar import CalendarTool
+    from openmirror.calendar.store import CalendarStore
+
+    return [CalendarTool(CalendarStore(Path(getattr(cfg, 'calendar_dir', ''))))]
+
+
+def mail_tools(cfg: Any) -> list[Tool]:
+    """The `mail` tool, when this install has a mailbox to use it on.
+
+    Gated on there actually being an account, which is the same rule the
+    media and desktop tools follow: a tool that is offered and can only fail
+    is worse than no tool, because the model will spend a turn discovering
+    that and then tell the person it cannot read their mail.
+    """
+    if not getattr(cfg, 'mail_enabled', False):
+        return []
+    from openmirror.agent.tools.mail import MailTool
+    from openmirror.mail.accounts import AccountStore, from_env
+
+    path = Path(getattr(cfg, 'mail_accounts', ''))
+    if not str(path):
+        return []
+    store = AccountStore(path)
+    return [MailTool(store)] if from_env(store) else []
 
 
 def web_tools(cfg: Any) -> list[Tool]:
@@ -176,11 +222,17 @@ def build_session(
     # without an explicit config silently lost the ability to buy anything.
     allow_purchases: bool | None = None,
     allow_credentials: bool | None = None,
+    allow_messages: bool | None = None,
     web: Any = None,
     browser: Any = None,
     stage: Any = None,
     media: Any = None,
     system: bool = False,
+    # The config, for the tools whose availability depends on what this
+    # install has configured rather than on a flag the caller set. `None`
+    # means no mail or calendar tool at all.
+    mail: Any = None,
+    calendar: Any = None,
     toolset: list[str] | None = None,
     mcp: Any = None,
     checkpoints: Any = None,
@@ -205,6 +257,7 @@ def build_session(
         for name, value in (
             ('allow_purchases', allow_purchases),
             ('allow_credentials', allow_credentials),
+            ('allow_messages', allow_messages),
         )
         if value is not None
     }
@@ -235,6 +288,10 @@ def build_session(
 
     if web is not None:
         chosen = [*chosen, *web_tools(web)]
+    if mail is not None:
+        chosen = [*chosen, *mail_tools(mail)]
+    if calendar is not None:
+        chosen = [*chosen, *calendar_tools(calendar)]
     if browser is not None:
         chosen = [*chosen, *browser_tools(browser)]
     if stage is not None:
@@ -306,6 +363,9 @@ def build_session(
             ('agents', 'agent'),
             ('skills', 'skill'),
             ('lsp', 'lsp'),
+            ('git', 'git'),
+            ('mail', 'mail'),
+            ('calendar', 'calendar'),
         )
         if marker in names
     ]
