@@ -152,6 +152,273 @@ NETWORK_COMMANDS = {
     'invoke-webrequest', 'invoke-restmethod', 'iwr', 'curl.exe', 'start-bitstransfer',
 }
 
+# Spending money, seen from a command line.
+#
+# The browser tool grades "Book this room — pay now" as a purchase, and
+# `ApprovalPolicy` never lets a purchase through without asking. The shell was
+# the way round that: `curl -X POST https://api.stripe.com/v1/charges -d
+# amount=5000` graded as plain network traffic, and `trusted` mode allows
+# network traffic without asking. Same money, same consequence, no prompt —
+# reached by the one tool that can do anything the others cannot.
+#
+# **This is string matching, and that is the honest limit of it.** A payment
+# script can be named anything and compute the URL at runtime, and nothing here
+# can follow it. What this buys is that the *obvious* routes stop being free:
+# the agent has to work at being subtle to spend without asking, rather than
+# reaching for the tool it was told to prefer. `OPAQUE` already grades a
+# runtime-built command as EXECUTE for the same reason.
+#
+# Hostnames rather than keywords wherever possible — `api.stripe.com` is a
+# payment API, `stripe` alone is a library name and `npm install stripe` is
+# not a purchase.
+PAYMENT_HOSTS = (
+    'stripe.com',
+    'api.stripe.com',
+    'paypal.com',
+    'api.paypal.com',
+    'checkout.stripe.com',
+    'squareup.com',
+    'api.squareup.com',
+    'checkout.squareup.com',
+    'braintreegateway.com',
+    'adyen.com',
+    'checkout.adyen.com',
+    'klarna.com',
+    'checkout.klarna.com',
+    'razorpay.com',
+    'api.razorpay.com',
+    'chargebee.com',
+    'api.chargebee.com',
+    'paddle.com',
+    'api.paddle.com',
+    'lemonsqueezy.com',
+    'gocardless.com',
+    # Booking, travel and ticketing: these sell, which is the same act.
+    'stripe.cn',
+    'weixin.qq.com',
+    'alipay.com',
+    'openapi.alipay.com',
+    'smartling.com',
+    'sabre.com',
+    'amadeus.com',
+    'booking.com',
+    'hotels.com',
+    'expedia.com',
+    'eventbrite.com',
+    'ticketmaster.com',
+    # Cloud spend. A `gcloud`/`aws`/`az` command that creates a billable
+    # resource is a purchase, and it is a purchase nobody thinks of as one.
+    'compute.googleapis.com',
+    'billing.googleapis.com',
+    'ec2.amazonaws.com',
+    'sts.amazonaws.com',
+    'management.azure.com',
+)
+
+# HTTP methods that mean "this changes something". Not money on their own —
+# they are what turns a payment URL from a documentation lookup into a write.
+#
+# The separator is explicit because curl accepts both `-XPOST` and `-X POST`,
+# and the flag may carry a quoted value. `\s*` alone would also match the `-X`
+# out of `-XPOST` and then read `POST` as a separate token, which happens to
+# work for one spelling and silently misses the other.
+PAYMENT_METHODS = re.compile(
+    r'(?:-X|--request)\s*[\'\"]?(POST|PUT|PATCH|DELETE)\b', re.I
+)
+
+# Providers whose *own CLIs* bill. `gh` is not here — it is authenticated
+# already and its actions are not purchases.
+PAYMENT_CLIS = {
+    'stripe',
+    'gcloud',
+    'gsutil',
+    'bq',
+    'az',
+    'aws',
+    'wrangler',
+    'flyctl',
+    'fly',
+    'doctl',
+    'heroku',
+    'vercel',
+    'netlify',
+    'railway',
+    'terraform',
+    'pulumi',
+}
+
+# Flag names that mean a charge, on a CLI we do not otherwise recognise.
+PAYMENT_FLAGS = re.compile(
+    r'--(?:premium|upgrade|billing|plan|subscription|pro)\b'
+    r'|\binstances\s+create\b'
+    r'|\bserverless\s+deploy\b',
+    re.I,
+)
+
+# Subcommands of a billing CLI that change nothing, and so cost nothing.
+#
+# Matched against *any* word of the subcommand rather than a single resolved
+# "verb", because the position of the action is not fixed: `gcloud compute
+# instances list` ends in the verb, `aws ec2 describe-instances` is one
+# hyphenated token, and `gcloud compute instances create box` ends in a
+# resource name. Scanning for a known action is the only reading that holds
+# for all three.
+_CLI_READ_ONLY = re.compile(
+    r'^(?:list|ls|describe|get|show|status|version|config|help|info|'
+    r'validate|plan|init|whoami|account|session|logs|history|diff|listen)'
+    r'(?:-|$)',
+    re.I,
+)
+
+# And the ones that do bill. Checked first, and separately, so that a command
+# mixing both — `gcloud compute instances delete` has `instances` and `list`
+# nowhere but `terraform plan apply` is a real plan *and* a real apply — is
+# graded as spending.
+_CLI_SPENDS = re.compile(
+    r'^(?:create|run|start|launch|delete|update|set|put|post|patch|apply|'
+    r'deploy|provision|attach|detach|import|restore|rollback|copy|move|'
+    r'scale|resize|terminate|stop|add|remove|make|build|publish|release|'
+    r'subscribe|upgrade|enable|install|register|purchase|order|buy|'
+    r'checkout|pay|activate)(?:-|$)',
+    re.I,
+)
+
+# Reading a provider's documentation is not paying them. `-I`/`--head` and the
+# silent flags say so outright.
+#
+# Anchored on whitespace rather than `\b`: in `curl -d x`, the `-` and the
+# space either side are both non-word characters, so a word boundary is never
+# there to match and `\b-d\b` silently never fires. The trailing lookahead
+# stops `-d` matching inside `--delete` or `-directory`.
+_HTTP_READ_ONLY = re.compile(
+    r'(?:^|\s)(?:-I|--head|-O|-J|-s|-S|--silent)(?=\s|$|=)', re.I
+)
+
+# Flags that make a `curl` write. Without one of these it is a GET, whatever
+# the URL looks like.
+_HTTP_WRITE_FLAG = re.compile(
+    r'(?:^|\s)(?:-X|--request|-d|--data|--data-raw|--data-binary|-F|--form'
+    r'|-T|--upload-file|--json)(?=\s|$|=)',
+    re.I,
+)
+
+# A URL that *is* the purchase: a hosted checkout page, a payment link. Fetching
+# one of these is the closest thing on the wire to tapping "Pay", and it is
+# also the easiest purchase to run by accident — `curl <link>` in a log, a
+# paste in chat, a link preview that fetches on its own.
+_PAYMENT_PAGE = re.compile(
+    r'(?:^|[./])(?:checkout|payment|pay|invoice|order|billing)(?:[./?#]|$)',
+    re.I,
+)
+
+# Where the payment APIs keep their documentation, which is the one place
+# nobody is spending money by reading it. Narrow on purpose: `docs.` and a
+# `/docs` path are documentation markers, whereas a bare `api` substring is
+# not, because `/api/checkout` is where the real endpoints live.
+_DOCS_HINT = re.compile(
+    r'(?:^|[./])(?:docs|developers?|reference|guides)(?:[./?#-]|$)'
+    r'|/(?:docs|developers?)/',
+    re.I,
+)
+
+
+def _spends_money(command: str) -> str | None:
+    """Why this command line looks like it spends money, or None.
+
+    A `why` and not a bool, because the approval prompt shows it and "this
+    spends money" with no more detail is a prompt nobody can act on — the
+    person being asked has no way to tell which of three charges it is.
+    """
+    lowered = command.lower()
+    is_fetch = bool(re.search(r'\b(?:curl|wget|invoke-webrequest|iwr|invoke-restmethod)\b', command, re.I))
+
+    # A fetch that is plainly a read is documentation. The hostnames below are
+    # public, and somebody reading Stripe's docs to work out how to integrate
+    # it should not be asked to approve a purchase every time they do.
+    # `-d` is a write (curl infers POST from it), so it is not a read.
+    #
+    # A checkout link is the exception even when it is a bare GET: reading a
+    # docs page and opening someone's payment link differ only in the path, and
+    # the path is the part that spends. A `/docs` path is exempt even there,
+    # because Stripe's own checkout reference lives under that URL too.
+    if is_fetch and not _HTTP_WRITE_FLAG.search(command):
+        if _PAYMENT_PAGE.search(command) and not _DOCS_HINT.search(command):
+            return 'a payment link'
+        if _HTTP_READ_ONLY.search(command) or not PAYMENT_METHODS.search(command):
+            return None
+
+    for host in PAYMENT_HOSTS:
+        if host in lowered:
+            return f'names {host}, a payment or booking API'
+
+    # A POST to anything is worth a look, but only alongside something that
+    # makes it a charge: an agent POSTing to its own API should not be stopped
+    # every time.
+    for pattern, why in (
+        (re.compile(r'\b(?:checkout|pay|charge|billing|invoice|subscription)\b[^\s]*=?\d', re.I),
+         'a payment parameter'),
+        (re.compile(r'\b(?:amount|price|total|charge_amt|invoice_total)\s*[=:]\s*[\d.]+', re.I),
+         'an explicit amount'),
+        (re.compile(r'\bstripe\b[^\n]*(?:token|charge|intent|price_)\b', re.I),
+         'a Stripe object'),
+    ):
+        if pattern.search(command):
+            return why
+
+    if PAYMENT_METHODS.search(command) and re.search(r'(?:amount|price|total|charge|invoice)\s*[=:]', command, re.I):
+        return 'a write to a payment API'
+
+    for seg in _segments_or_none(command):
+        name = _command_name(seg[0]) if seg else ''
+        if name in PAYMENT_CLIS:
+            if _cli_is_read_only(seg):
+                continue
+            return f'`{name}` bills for what it creates'
+        if len(seg) > 1 and PAYMENT_FLAGS.search(' '.join(seg[1:])):
+            return f'`{name}` with a paid option'
+
+    return None
+
+
+def _segments_or_none(command: str) -> list[list[str]]:
+    try:
+        return _segments(command)
+    except ToolError:
+        return []
+
+
+def _cli_is_read_only(seg: list[str]) -> bool:
+    """Whether this billing-CLI invocation is one that cannot cost anything.
+
+    Takes the raw segment rather than the name- and flag-stripped view,
+    because `_command_name` is deliberately for finding the *program*: it
+    returns the last token before a `--` terminator, which is `POST` in
+    `curl -X POST ...` and the wrong word entirely for deciding whether a
+    cloud CLI is being asked to create something.
+    """
+    # Long flags carry the verb as often as the subcommand does: `s3 ls
+    # --delete` reads like a listing and destroys the bucket, and the flag is
+    # the only place the deletion is named. So flags are kept for the spend
+    # test and dropped for the read test, rather than dropped for both.
+    flags = [w for w in seg[1:] if w.startswith('-')]
+    words = [w for w in seg[1:] if not w.startswith('-')]
+    # A long flag is `--delete`; the verb inside it is `delete`.
+    verbs_in_flags = [f.lstrip('-') for f in flags]
+    if not words and not any(_CLI_SPENDS.match(v) for v in verbs_in_flags):
+        # No subcommand at all — `stripe --version`, `az account` with nothing
+        # after it. Flags on their own cannot create anything billable.
+        return True
+    # A known action beats everything else. An unrecognised one falls through
+    # to "spends", which is the safe direction to be wrong in: the cost of
+    # asking about a read is one prompt, and the cost of not asking about a
+    # write is somebody's bill.
+    if any(_CLI_SPENDS.match(w) for w in words + verbs_in_flags):
+        return False
+    if any(_CLI_READ_ONLY.match(w) for w in words):
+        return True
+    return False
+
+
 # Shell metacharacters that make a token scan unreliable, because what runs is
 # decided at runtime rather than visible in the text.
 OPAQUE = re.compile(r'\$\(|`|\beval\b|\bexec\b|\|\s*(sh|bash|zsh)\b')
@@ -241,6 +508,14 @@ def classify(command: str) -> tuple[Risk, str]:
         # Command substitution, eval, or a pipe into a shell: what actually
         # runs is not in the text, so no token scan can be trusted.
         return Risk.EXECUTE, 'builds the command at runtime'
+
+    # Before the network check, deliberately. A Stripe charge *is* a network
+    # call, and grading it as one put it in the set `trusted` runs without
+    # asking — so the one tool that can do anything could spend money silently
+    # while every other route to spending money asked first.
+    paid = _spends_money(command)
+    if paid:
+        return Risk.PURCHASE, paid
 
     try:
         segments = _segments(command)

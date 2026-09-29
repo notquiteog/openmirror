@@ -196,14 +196,26 @@ async def test_it_books_up_to_the_point_of_paying(tmp_path):
 
             # Every mode. `unrestricted` means "stop asking me about this
             # machine"; it has never meant "spend my money", and this is the
-            # line that says so. `read_only` refuses outright rather than
-            # prompting, because a mode promising nothing changes must not
-            # offer a checkout.
+            # line that says so.
+            #
+            # `read_only` and `plan` both refuse outright rather than
+            # prompting. A mode promising that nothing changes must not offer a
+            # checkout, and plan mode makes exactly that promise until its plan
+            # is approved — approving a step of a plan nobody was shown is not
+            # consent to the plan.
+            #
+            # The plan case was `ASK` here until the `allow_purchases` change
+            # in e36fd7c, which made both refusals deliberate. That commit
+            # wrote the rule down in `test_money_and_secrets.py` and in the
+            # policy itself, and missed this line: the same commit left the
+            # old expectation behind, and the two have been contradicting each
+            # other ever since. The policy was right.
             call = ToolCall(id='c1', name='browser_click', arguments={'ref': book},
                             risk=assessment.risk, summary=assessment.summary)
             for mode in Mode:
                 decision, why = ApprovalPolicy(mode=mode).decide(call)
-                wanted = Decision.DENY if mode is Mode.READ_ONLY else Decision.ASK
+                refusing = mode in (Mode.READ_ONLY, Mode.PLAN)
+                wanted = Decision.DENY if refusing else Decision.ASK
                 assert decision is wanted, f'{mode.value} would have booked it: {why}'
 
             # Saving it for later is not a purchase, and grading everything on

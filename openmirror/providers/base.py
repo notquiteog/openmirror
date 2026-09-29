@@ -15,6 +15,7 @@ OpenAI payload is easy; recovering blocks from a flattened one is not.
 from __future__ import annotations
 
 import abc
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -195,6 +196,79 @@ class StreamDone:
 
 
 StreamEvent = StreamText | StreamThinking | StreamToolUse | StreamDone
+
+
+async def one_shot(
+    provider: Any,
+    req: ChatRequest,
+    *,
+    what: str = 'text',
+    # Named `seconds` rather than `timeout`, because it *is* honoured — it is
+    # wrapped around the stream in `asyncio.timeout` below — and a name that
+    # reads as a bound the caller might think is advisory is worse than one
+    # that says what it is. Ruff's ASYNC109 asks for this rename for the
+    # opposite reason: it cannot tell the difference, and a caller who has to
+    # read the body to learn whether their bound applies is the problem.
+    seconds: float = 120.0,
+) -> str:
+    """Collect one complete text response, and say what went wrong if not.
+
+    For the handful of places that need a model's judgement on a piece of text
+    and nothing else: a commit message from a diff, a draft reply from a
+    message. Not a second way to run an agent — there is one of that, and it
+    is `AgentSession`.
+
+    Five things this gets right that collecting the stream by hand does not:
+
+    * **No ceiling, by default.** `ChatRequest.max_tokens` is 0 for a reason
+      documented on the field, and this respects it. A cap here is actively
+      harmful rather than merely useless: a reasoning model spends the budget
+      on *thinking*, emits no text at all, and returns `stop_reason:
+      max_tokens` with an empty answer. Measured on a diff of two lines: 400
+      tokens of reasoning, zero characters of commit message, and a caller
+      that could only report "the model returned nothing". The prompt is
+      already a few hundred tokens in, so there is nothing to bound.
+    * **A ceiling on the wall clock instead.** Separate from the token cap,
+      and for a different reason: these sit behind a button, and a button that
+      says "writing…" for ever has no way out but reloading the page. Two
+      minutes is long enough for a reasoning model on a large diff and short
+      enough that a hung provider is a sentence rather than a mystery.
+    * **A truncated response is not an empty one.** If the model stopped
+      because it ran out of room, that is a different failure from one that
+      had nothing to say, and it is worth saying which.
+    * **Tool calls are ignored rather than treated as text.** A model asked
+      for a commit message that calls a tool has misunderstood, and returning
+      the tool's arguments as the message would be worse than saying so.
+    * **The timeout is its own error.** A slow model and a refused key are
+      different problems and the operator's next step differs.
+    """
+    parts: list[str] = []
+    stop = ''
+    try:
+        # `asyncio.timeout` rather than `wait_for`, so what comes out is a
+        # timeout rather than a cancellation of whatever this was called
+        # inside.
+        async with asyncio.timeout(seconds):
+            async for event in provider.stream(req):
+                if isinstance(event, StreamText):
+                    parts.append(event.text)
+                elif isinstance(event, StreamDone):
+                    stop = event.stop_reason
+    except TimeoutError as exc:
+        raise NoProviderError(
+            f'the model did not answer within {int(seconds)}s. It may be slow or busy — try again, '
+            f'or use a faster one.'
+        ) from exc
+
+    text = ''.join(parts).strip()
+    if text:
+        return text
+    if stop == 'max_tokens':
+        raise NoProviderError(
+            f'the model used its whole response budget thinking and produced no {what}. '
+            f'Retry, or give it a model that thinks less.'
+        )
+    raise NoProviderError(f'the model returned no {what}')
 
 
 # ---------------------------------------------------------------------------

@@ -117,6 +117,19 @@ const TOOL_STATES = {
   media_params: 'reading',
   media_job: 'reading',
   import_workflow: 'writing',
+  // A repository is a document the agent is reading, and a commit is a small
+  // deliberate write. Both are the ordinary file-ish states rather than
+  // something new — which is the point: the commit should feel like part of
+  // the same work as the edit that caused it, not like a separate activity.
+  git: 'reading',
+  // Mail is somebody else's words arriving, or a reply going out. `browsing`
+  // is the state that already means "paying attention to something beyond
+  // this window", and for an inbox that is exactly what it is.
+  mail: 'browsing',
+  // A calendar is a list of other people's plans, which is the same thing
+  // mail is from the creature's side: something beyond this window that it
+  // is paying attention to.
+  calendar: 'reading',
   ask_user: 'waiting',
 };
 
@@ -226,6 +239,77 @@ const reduced = typeof window !== 'undefined' && window.matchMedia
   ? window.matchMedia('(prefers-reduced-motion: reduce)')
   : null;
 
+/* ------------------------------------------------- the one animation frame */
+
+/* Every companion on the page shares a single `requestAnimationFrame` loop.
+
+   This exists because the alternative was measured, not assumed. Up to eight
+   perches are mounted at once — the perch, the app mark, the empty-session
+   hero, the composer thumbnail, the voice strip, and one per approval bar —
+   and each used to run its own loop, so the page scheduled eight callbacks
+   every frame. Worse, each loop ran at display rate no matter what the state
+   asked for: a companion whose idle drift is authored at 0.6fps was still
+   repainted sixty times a second, fifty-nine of them to restore the identical
+   sprite. That is roughly 480 canvas paints a second for pixels that never
+   changed, and it competed with the transcript for the same frame budget.
+
+   So: one loop, and each perch is only painted when its own next frame is
+   due. The loop itself stops when the set empties, so an idle page with no
+   companion is not running a rAF at all. */
+const live = new Set();
+let frame = null;
+
+function paintDue(now) {
+  // Iterate a copy: a tick can add or drop a perch (a state change, a card
+  // being torn down mid-frame), and mutating the set underneath the loop
+  // would either skip a perch or visit one twice.
+  for (const perch of [...live]) {
+    if (!perch.def) continue;
+    const at = now || performance.now();
+    if (at - perch.lastPaint < perch.nextDue) continue;
+    perch.tick(at);
+  }
+  frame = live.size ? requestAnimationFrame(paintDue) : null;
+}
+
+/* How long until this perch's next frame. From the state being drawn, so a
+   slow drift costs what it says it costs. Clamped at a floor because a state
+   with no `fps` means "as fast as the display", and a zero would mean
+   "never". Takes the perch rather than using `this`, because it is called
+   from the driver, not as a method. */
+function due(perch, now) {
+  if (perch.frozen()) return 400;
+  const state = perch.resolve(perch.view(now).state);
+  const fps = state && state.fps;
+  if (!fps) return 0;
+  return 1000 / fps;
+}
+
+function add(perch) {
+  /* The deadline is deliberately left alone here. A fresh perch and a perch
+     whose state just changed both carry a deadline of 0 — "paint on the next
+     frame" — and computing a rate at this point would overwrite that with the
+     interval of a state that is about to be replaced. The first `tick` sets
+     the real rate from what it actually drew.
+
+     It also matters for a brand-new perch: setting the deadline to 1.6s here
+     while `lastPaint` is already now would mean it draws nothing for 1.6
+     seconds, and the companion appears to be missing. */
+  if (perch.lastPaint === 0) perch.lastPaint = performance.now();
+  live.add(perch);
+  if (frame === null) frame = requestAnimationFrame(paintDue);
+}
+
+function drop(perch) {
+  live.delete(perch);
+}
+
+/* Exposed for the tests and for a companion menu that wants to show what the
+   page is spending: how many frames the last second actually cost. */
+export function driverState() {
+  return { live: live.size, running: frame !== null };
+}
+
 export class Perch {
   /* `scale` is how many canvas pixels one sprite pixel gets. It is per-perch
      rather than global because the same creature now appears at several
@@ -242,12 +326,15 @@ export class Perch {
     this.flashing = null;
     this.flashFrom = 0;
     this.flashUntil = 0;
-    this.frame = null;
-    this.timer = null;
+    // How often this perch actually needs a frame, in milliseconds, and when
+    // it last painted. The driver reads both to decide whether this pass is
+    // due; see `due`. Taken from the state being drawn, so a creature whose
+    // idle drift is 0.6fps is not repainted at display rate to show the same
+    // sprite.
+    this.nextDue = 0;
+    this.lastPaint = 0;
+    this.frozenTimer = null;
     this.resize();
-    // Kept on the instance so `destroy` can take them off again: perches are
-    // created and thrown away with the cards they live on now, and a listener
-    // per dead perch is a leak with a frame loop attached.
     this.onResize = () => this.resize();
     this.onWake = () => this.pump();
     window.addEventListener('resize', this.onResize);
@@ -263,7 +350,7 @@ export class Perch {
      able to stop being one. */
   destroy() {
     this.def = null;
-    this.pump();
+    this.unpump();
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onWake);
     if (reduced && reduced.removeEventListener) reduced.removeEventListener('change', this.onWake);
@@ -307,6 +394,12 @@ export class Perch {
     if (!CHAIN[name] || name === this.ambient) return;
     this.ambient = name;
     this.since = performance.now();
+    // A state change is information, and it is the one thing that must not be
+    // paced by the old state's rate. The companion going from a 0.6fps idle
+    // drift to a 14fps "running" has to repaint on the next frame, not up to
+    // 1.6 seconds later — that gap is the whole point of the creature, and
+    // missing it makes the companion look broken rather than calm.
+    this.nextDue = 0;
     this.pump();
   }
 
@@ -318,6 +411,10 @@ export class Perch {
     this.flashing = name;
     this.flashFrom = performance.now();
     this.flashUntil = this.flashFrom + (ms || (state && state.once) || 1200);
+    // A flash has to be seen the moment it starts. Leaving the deadline
+    // alone here would mean a companion sitting in a 0.6fps idle waits up to
+    // 1.6s to show the failure it just had.
+    this.nextDue = 0;
     this.pump();
   }
 
@@ -346,37 +443,81 @@ export class Perch {
 
   /* A frame loop while something is moving; a slow timer when nothing is,
      which exists only to notice that a flash has finished. Neither runs with
-     the tab in the background. */
+     the tab in the background.
+
+     Every perch used to own a `requestAnimationFrame` loop of its own, which
+     was two problems. There could be eight of them, and each one woke the
+     compositor whether or not it had anything new to draw. Worse, the loop
+     ran at display rate regardless of the state's own `fps`: an idle drift
+     authored at 0.6fps was still repainted sixty times a second, fifty-nine of
+     them to put back the identical sprite. The art is nearest-neighbour and
+     the states are slow by design, so that was the largest steady source of
+     wasted work on the page and none of it was visible.
+
+     So the frame is shared and the rate is honoured. `add` puts a perch in
+     the driver's set; the driver runs one loop, and each pass paints only the
+     perches whose next frame is actually due. A perch at 0.6fps costs one
+     paint every 1.6s. */
   pump() {
     const wanted = Boolean(this.def) && !document.hidden;
     const still = wanted && this.frozen();
 
-    if (this.frame !== null && (!wanted || still)) {
-      cancelAnimationFrame(this.frame);
-      this.frame = null;
-    }
-    if (this.timer !== null && (!wanted || !still)) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-
     if (!wanted) {
+      this.unpump();
       this.clear();
       return;
     }
     if (still) {
+      // Held still, and the flash clock still has to run — so a timer, not a
+      // frame loop. Slow on purpose: the only thing it exists to notice is a
+      // flash ending.
+      this.freeze();
       this.draw(performance.now());
-      if (this.timer === null) this.timer = setInterval(() => this.draw(performance.now()), 400);
-    } else if (this.frame === null) {
-      this.frame = requestAnimationFrame((now) => this.tick(now));
+      if (this.frozenTimer === null) {
+        this.frozenTimer = setInterval(() => {
+          this.lastPaint = performance.now();
+          this.draw(performance.now());
+        }, 400);
+      }
+      return;
+    }
+    this.thaw();
+    add(this);
+  }
+
+  unpump() {
+    drop(this);
+    if (this.frozenTimer !== null) {
+      clearInterval(this.frozenTimer);
+      this.frozenTimer = null;
     }
   }
 
+  freeze() {
+    drop(this);
+  }
+
+  thaw() {
+    if (this.frozenTimer !== null) {
+      clearInterval(this.frozenTimer);
+      this.frozenTimer = null;
+    }
+  }
+
+  /* The driver's pass. Called only when this perch's next frame is due, so
+     there is no reason to check the clock again in here.
+
+     The deadline is recomputed after drawing rather than before, because the
+     state that was just drawn is the one that decides how long the next frame
+     should be. Recomputing it on entry would mean a perch that has just been
+     woken from a slow idle back into a fast state waits out the *old*
+     interval before it speeds up, which is visible as a stutter on exactly
+     the frame where the agent starts working. */
   tick(now) {
-    this.frame = null;
+    this.lastPaint = now;
     if (!this.def) return;
     this.draw(now);
-    this.pump();
+    this.nextDue = due(this, now);
   }
 
   /* What is being rendered this instant: the flash if one is running, the

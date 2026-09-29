@@ -29,6 +29,9 @@
   <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14"/></symbol>
   <symbol id="i-plug" viewBox="0 0 16 16"><path d="M6 2v4"/><path d="M10 2v4"/><path d="M4 6h8v2.5A4 4 0 0 1 8 12.5 4 4 0 0 1 4 8.5z"/><path d="M8 12.5V14.5"/></symbol>
   <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 16 16"><rect x="1.5" y="3.5" width="13" height="9" rx="1.2"/><path d="m1.8 4.4 6.2 4.4 6.2-4.4"/></symbol>
+  <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 13V3"/><path d="m3.5 7.5 4.5-4.5 4.5 4.5"/></symbol>
+  <symbol id="i-git" viewBox="0 0 16 16"><circle cx="4.5" cy="3.5" r="1.8"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="8" r="1.8"/><path d="M4.5 5.3v5.4"/><path d="M4.5 8h5.2"/></symbol>
 </svg>
 
 <aside id="sidebar">
@@ -63,6 +66,9 @@
     </button>
     <button class="nav-row mode" data-mode="search">
       <svg class="ic"><use href="#i-search"></use></svg><span>Search</span>
+    </button>
+    <button class="nav-row mode" data-mode="mail">
+      <svg class="ic"><use href="#i-mail"></use></svg><span>Mail</span>
     </button>
   </nav>
 
@@ -107,6 +113,15 @@
       <svg class="ic"><use href="#i-wave"></use></svg><span>Talk</span>
     </button>
     <span id="diffstat" class="diffstat" hidden></span>
+    <!-- Commit, from the project you are in. The bar only appears in a
+         working root that is a git repository with something in it, and the
+         AI button writes a message you can edit rather than one it sends —
+         see commit.js for why those are two buttons. -->
+    <span id="commit-slot" hidden>
+      <button id="commit-open" class="chip flat" title="Commit the work in this project">
+        <svg class="ic"><use href="#i-git"></use></svg><span id="commit-count">0 changed</span>
+      </button>
+    </span>
     <button id="rewind" class="icon" hidden title="Undo the agent's file changes">
       <svg class="ic"><use href="#i-undo"></use></svg>
     </button>
@@ -150,6 +165,7 @@
 
     <div id="field">
       <ul id="slash" role="listbox" aria-label="Commands and skills" hidden></ul>
+      <ul id="files" role="listbox" aria-label="Files to mention" hidden></ul>
       <textarea id="input" rows="1" placeholder="Ask it to do something, or / for commands and skills…  (Enter to send, Shift+Enter for a newline)" disabled></textarea>
       <div id="controls">
         <!-- The buddy, at thumbnail size, saying what it is doing in words.
@@ -188,6 +204,17 @@
         <svg class="ic"><use href="#i-folder"></use></svg><span></span>
       </span>
       <span id="provider-chip" class="chip flat" hidden></span>
+      <div class="spacer"></div>
+      <!-- How full the context is, and how far from being summarised. The
+           number is exact; the bar only appears when there is a denominator
+           to draw it against, because a bar at 40% on a model that will
+           refuse the request is worse than no bar. Clicking it is the same
+           as typing /compact, which is what somebody looking at 92% wants. -->
+      <button id="context-meter" class="context-meter" hidden
+              title="How full the conversation is. Click to compact it.">
+        <span class="ctx-bar"><span id="context-fill"></span></span>
+        <span id="context-text"></span>
+      </button>
     </div>
   </form>
 
@@ -403,7 +430,78 @@
       <pre id="reader-body"></pre>
     </article>
   </section>
+
+  <!-- ------------------------------------------------------------ mail -->
+  <!-- Folders, a list, and a reader. Not a chat window and not an agent
+       surface: this is the mail you already have, opened without leaving the
+       thing you were doing. The agent can read the same inbox through the
+       `mail` tool — the two are the same server and the same accounts, and
+       neither one has a copy of the other. -->
+  <section id="pane-mail" class="pane mail-pane" hidden>
+    <p id="mail-pane-note" class="meta mail-note"></p>
+    <div class="mail-split">
+      <nav id="mail-folders" class="mail-folders" aria-label="Folders"></nav>
+      <div id="mail-list" class="mail-list" role="list" aria-label="Messages"></div>
+      <div class="mail-right">
+        <article id="mail-reader" hidden>
+          <header>
+            <h2 id="mail-reader-subject"></h2>
+            <div class="spacer"></div>
+            <button id="mail-new" class="ghost small">New</button>
+            <button id="mail-reply" class="ghost small">Reply</button>
+            <button id="mail-close" class="ghost small">Close</button>
+          </header>
+          <p id="mail-reader-from" class="meta"></p>
+          <p id="mail-attachments" class="meta"></p>
+          <pre id="mail-reader-body"></pre>
+
+          <!-- The composer. The AI button writes into it and stops; sending
+               is the next button, and a separate one on purpose. -->
+          <div id="mail-compose" class="mail-compose" hidden>
+            <label>To<input id="mail-to" autocomplete="off"></label>
+            <label>Subject<input id="mail-subject" autocomplete="off"></label>
+            <textarea id="mail-body" rows="8" placeholder="Say what you want to say…"></textarea>
+            <pre id="mail-quoted" class="mail-quoted" hidden></pre>
+            <div class="mail-actions">
+              <button id="mail-ai" class="ghost small" title="Write a first draft you can edit. It does not send.">
+                Write it for me
+              </button>
+              <span id="mail-ai-note" class="meta"></span>
+              <div class="spacer"></div>
+              <button id="mail-discard" class="ghost small">Discard</button>
+              <button id="mail-send" class="primary small">Send</button>
+            </div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
 </main>
+
+<dialog id="commit-dialog">
+  <form method="dialog">
+    <h2>Commit</h2>
+    <p id="commit-root" class="meta"></p>
+    <div id="commit-files" class="commit-files" aria-label="What has changed"></div>
+    <label>Message
+      <textarea id="commit-message" rows="3" placeholder="What changed, and why — in the imperative, under 72 characters."></textarea>
+    </label>
+    <p id="commit-note" class="meta"></p>
+    <div class="commit-actions">
+      <!-- Two buttons, and the order is the argument: the model writes, a
+           person commits. "Write it for me" fills the box and stops; nothing
+           in this dialog reaches a commit without the message field being
+           read on the way. -->
+      <button id="commit-ai" type="button" class="ghost" title="Write a first draft from the staged diff. It does not commit.">
+        Write it for me
+      </button>
+      <button id="commit-stage-all" type="button" class="ghost small">Stage everything</button>
+      <div class="spacer"></div>
+      <button type="submit" value="cancel" class="ghost">Close</button>
+      <button id="commit-go" type="button" class="primary">Commit</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="new-dialog">
   <form method="dialog">
@@ -420,6 +518,9 @@
         <option value="browser,web">the web — a real browser, search, research</option>
         <option value="browser,desktop">the screen — browser and desktop control</option>
         <option value="files,todo">files only — no commands, no network</option>
+        <option value="git">a repository — read the working tree, stage, commit</option>
+        <option value="mail">mail — read, search, draft and answer</option>
+        <option value="calendar">your week — what is on, and where there is room</option>
         <option value="media">making things — images and video</option>
         <option value="system,shell">the machine — install software, system settings</option>
       </select>
@@ -505,7 +606,39 @@
     <button class="tab" role="tab" id="tab-connections" aria-controls="panel-connections" aria-selected="false">
       <svg class="ic"><use href="#i-plug"></use></svg><span>Connections</span>
     </button>
+    <button class="tab" role="tab" id="tab-updates" aria-controls="panel-updates" aria-selected="false">
+      <svg class="ic"><use href="#i-up"></use></svg><span>Updates</span>
+      <span id="update-dot" class="tab-dot" hidden title="a newer release exists"></span>
+    </button>
   </div>
+
+  <section class="tab-panel" role="tabpanel" id="panel-updates" aria-labelledby="tab-updates" hidden>
+    <p class="explain">
+      openmirror checks GitHub for a newer release and tells you. It never downloads or
+      installs anything on its own: downloading waits for you to press the button, and
+      installing waits for you to confirm, because a message that appears over work you are
+      doing is a message that gets dismissed without being read.
+    </p>
+    <p id="update-current" class="explain"></p>
+    <div id="update-state" class="update-state"></div>
+    <div id="update-notes" class="update-notes" hidden></div>
+    <menu>
+      <button id="update-check" type="button" class="ghost">Check now</button>
+      <div class="spacer"></div>
+      <button id="update-dismiss" type="button" class="ghost small" hidden>Not now</button>
+      <button id="update-apply" type="button" class="primary" hidden>Download</button>
+    </menu>
+    <p id="update-progress-wrap" class="explain" hidden>
+      <span id="update-progress-bar" class="update-bar"><span id="update-progress-fill"></span></span>
+      <span id="update-progress-text"></span>
+    </p>
+    <p class="explain" id="update-foot">
+      A downloaded installer is checked against the SHA256 published in the same release before
+      it is offered to run. That is an integrity check, not a signature: it catches a truncated
+      download and a mirror serving last week's build, and it does not prove who published
+      anything.
+    </p>
+  </section>
 
   <section class="tab-panel" role="tabpanel" id="panel-browser" aria-labelledby="tab-browser">
     <p class="explain">

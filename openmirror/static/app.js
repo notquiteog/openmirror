@@ -17,12 +17,18 @@
 
 import { companion, caption } from './companions/index.js';
 import { openConnections, wireConnections } from './connections.js';
-import { $, api, el, icon, onReachable, socket, took } from './dom.js';
+import { handleFileKey, resetFiles, wireFiles } from './files.js';
+import { setCommitRoot, wireCommit } from './commit.js';
+import { $, api, el, icon, json, onReachable, socket, took } from './dom.js';
 import { endLive, isLive, wireLive } from './live.js';
+import { wireMail } from './mail.js';
 import { go, mode, onEnter, onLeave, wireModes } from './modes.js';
 import { focusSearch, wireSearch } from './search.js';
+import { cancel as cancelStream, flush as flushStream, queue } from './stream.js';
 import { openStudio, stopPolling, wireStudio } from './studio.js';
 import { startTalking, stopTalking, talking, wireTalk } from './talk.js';
+import { renderContext, refreshContext, wireContext } from './context.js';
+import { renderUpdate, watchUpdates, wireUpdates } from './updates.js';
 import { Voice } from './voice.js';
 import { narrate, refreshRuns, wireWatch } from './watch.js';
 
@@ -69,8 +75,72 @@ const state = {
 
 const transcript = $('#transcript');
 
+/* Whether the reader is at the tail, and the scroll that follows from it.
+ *
+ * Both were a synchronous layout read on every append, and that is the one
+ * thing measured to be expensive here. Measured in a real browser at 880
+ * nodes, streaming text alone holds a 16.7ms frame and so does appending one
+ * card — but doing both, with a layout read and a scroll write alongside each
+ * append, sits at 33.3ms, because a card append invalidates layout and the
+ * next read forces it back. Two vsyncs for one frame's work, every frame, for
+ * the whole of a turn.
+ *
+ * The fix is to do it once per frame instead of once per append: the decision
+ * is memoised against a frame stamp, and the scroll is written once on the
+ * next animation frame. Four appends in one frame then cost one layout.
+ *
+ * The semantics are unchanged — the same question, the same answer, asked
+ * less often. What changes is that the answer is allowed to be up to one
+ * frame stale, which is invisible: the thing it gates is whether a scroll
+ * follows, and a scroll that follows one frame later is the same scroll.
+ */
+let followWanted = false;
+let followScheduled = false;
+let atBottomFrame = -1;
+let atBottomValue = true;
+
 function atBottom() {
-  return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
+  const stamp = frameStamp();
+  if (stamp === atBottomFrame) return atBottomValue;
+  const value = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
+  atBottomFrame = stamp;
+  atBottomValue = value;
+  return value;
+}
+
+/* A counter that advances once per animation frame.
+
+   Not `performance.now()`, whose resolution is deliberately coarse: a
+   millisecond timer cannot tell two layout reads in the same frame from two
+   in different ones, which is the whole question here. */
+let frameNo = 0;
+let frameScheduled = false;
+function frameStamp() {
+  if (!frameScheduled) {
+    frameScheduled = true;
+    requestAnimationFrame(() => {
+      frameScheduled = false;
+      frameNo++;
+    });
+  }
+  return frameNo;
+}
+
+/* Keep the tail in view, once, on the next frame.
+
+   The write is `scrollHeight` because that is what clamps to the bottom, and
+   a read of it is the cost being coalesced rather than removed — one per
+   frame instead of one per append. */
+function scrollToTail() {
+  followWanted = true;
+  if (followScheduled) return;
+  followScheduled = true;
+  requestAnimationFrame(() => {
+    followScheduled = false;
+    if (!followWanted) return;
+    followWanted = false;
+    transcript.scrollTop = transcript.scrollHeight;
+  });
 }
 
 function append(node) {
@@ -79,7 +149,8 @@ function append(node) {
   // streaming log can do.
   const follow = atBottom();
   transcript.appendChild(node);
-  if (follow) transcript.scrollTop = transcript.scrollHeight;
+  if (follow) scrollToTail();
+  prune();
   settle();
   return node;
 }
@@ -94,10 +165,82 @@ function settle() {
   $('#starters').hidden = !empty;
 }
 
+/* A transcript that has been running all afternoon is a few thousand nodes,
+   every one of them laid out on every append and every scroll. Past a certain
+   size that stops being a transcript and starts being the reason the page
+   feels heavy — and the nodes that go are the ones you will not scroll back
+   to, because you are looking at what just happened.
+
+   The oldest completed turns go first, and only ever as a whole turn. Half a
+   turn is worse than a full one: a tool card whose output has been dropped but
+   whose header and diff are still on screen is a broken-looking card, and the
+   receipt at the end of a turn with the turn gone is a receipt for nothing.
+
+   A turn is kept as a unit, the current turn is never touched, and nothing is
+   removed while the reader is up in the part that would go — pruning out from
+   under a scroll position is what makes a long log feel like it is fighting
+   you. The threshold is deliberately generous: this is a safety valve for
+   pathological sessions, not an optimisation, and a transcript that fits in
+   memory should stay whole.
+
+   Kept as a count of nodes rather than a height, because height changes with
+   the window and with how a given turn happens to be sized, and either would
+   make the same session prune differently on two machines. */
+const KEEP_NODES = 900;
+
+function prune() {
+  const kids = [...transcript.children];
+  if (kids.length <= KEEP_NODES) return;
+
+  /* Never while the reader is away from the tail — not because removing things
+     above them is wrong in itself, but because the content under the cursor
+     would shift by an amount they did not cause and could not predict. */
+  if (!atBottom()) return;
+
+  let spare = kids.length - KEEP_NODES;
+  for (const node of kids) {
+    if (spare <= 0) break;
+    if (node.id === 'hero') continue;
+    /* The turn in progress is the one thing on screen by definition. */
+    if (node === state.turnNode || (state.turnNode && node.contains(state.turnNode))) continue;
+    /* Walk forward in whole turns: everything from one `.turn` up to the next
+       is part of the same answer, and stopping halfway through one leaves
+       orphans. `tail` is where the current turn starts. */
+    if (node.classList.contains('turn') && !node.classList.contains('user')) {
+      const at = kids.indexOf(node);
+      const end = kids.findIndex((later, i) => i > at && later.classList.contains('turn'));
+      const stop = end === -1 ? kids.length : end;
+      for (let i = at; i < stop && spare > 0; i++) {
+        cancelStream(kids[i]);
+        kids[i].remove();
+        spare--;
+      }
+      continue;
+    }
+    /* Not a turn of its own: a tool card, a notice, a receipt. They belong to
+       the turn above them and go only once that turn has, so they are left
+       alone here — an orphan receipt is worse than a long transcript, and the
+       walk above will have taken the turn that owns them. */
+  }
+  settle();
+}
+
 function clearTranscript() {
+  /* Everything queued belongs to nodes that are about to be detached, and some
+     of it belongs to the session being left. Dropped rather than flushed:
+     flushing would write one last frame of a session you have already
+     navigated away from, straight into detached nodes. */
   for (const node of [...transcript.children]) {
+    cancelStream(node);
     if (node.id !== 'hero') node.remove();
   }
+  for (const card of state.tools.values()) cancelStream(card);
+  state.tools.clear();
+  /* The sidebar is not part of the transcript, so tearing one down does not
+     tear the other down — but the fingerprint has to go with the session it
+     described, or the next `loadSessions` would see an unchanged print and
+     leave the list stale. */
+  lastPrint = '';
   settle();
 }
 
@@ -169,8 +312,16 @@ function assistantTurn() {
 function appendText(text) {
   if (!state.turnNode) assistantTurn();
   const body = state.turnNode.querySelector('.body');
-  body.textContent += text;
-  if (atBottom()) transcript.scrollTop = transcript.scrollHeight;
+  /* Coalesced to the next frame rather than written per token. A burst of
+     deltas in one frame becomes one write, and the scroll is a single pass at
+     the end of it instead of a layout read followed by a layout write for
+     every token. Nothing is dropped: the text is accumulated, not sampled. */
+  queue(body, text, (node, chunk) => {
+    node.textContent += chunk;
+    // Coalesced like everything else here: a burst of deltas in one frame is
+    // one read and one scroll, not one each per token.
+    if (atBottom()) scrollToTail();
+  });
 }
 
 function appendThinking(text) {
@@ -182,7 +333,9 @@ function appendThinking(text) {
     box.appendChild(el('span'));
     state.turnNode.insertBefore(box, state.turnNode.firstChild);
   }
-  box.querySelector('span').textContent += text;
+  queue(box.querySelector('span'), text, (node, chunk) => {
+    node.textContent += chunk;
+  });
 }
 
 function renderScreenshot(display) {
@@ -299,6 +452,9 @@ const VERBS = {
   generate_video: 'Started rendering',
   media_job: 'Checked on the render',
   import_workflow: 'Installed the workflow',
+  git: 'Checked the repository for',
+  mail: 'Mail',
+  calendar: 'Checked the calendar for',
   ask_user: 'Asked you',
 };
 
@@ -400,10 +556,15 @@ function toolOutput(callId, text, stream) {
     setCard(card, true);
   }
   if (stream === 'stderr') out.classList.add('err');
-  out.textContent += text;
-  // A long build must not push everything else off screen.
-  if (out.textContent.length > 40000) out.textContent = out.textContent.slice(-40000);
-  out.scrollTop = out.scrollHeight;
+  /* Trimmed inside the queued write rather than on the way in. Measuring
+     `out.textContent.length` per token is itself a read of the whole log, and
+     a build emitting 40k lines would be doing that 40k times. The cap is the
+     same, and it still keeps the tail. */
+  queue(out, text, (node, chunk) => {
+    node.textContent += chunk;
+    if (node.textContent.length > 40000) node.textContent = node.textContent.slice(-40000);
+    node.scrollTop = node.scrollHeight;
+  });
 }
 
 /* How much of a file changed, counted off the unified diff the server already
@@ -447,6 +608,11 @@ function showDiffstat() {
 function toolDone(result) {
   const card = state.tools.get(result.id);
   if (!card) return;
+  /* This card stops being live output and becomes a finished record: the
+     output element loses `.live`, the card folds, and the transcript is
+     measured to decide. Any text still queued for it has to land first, or
+     the last lines of a build would be missing from the card that keeps it. */
+  flushStream();
   if (!result.ok) card.classList.add('failed');
   // A finished call must not still be offering Allow and Deny. This shows up
   // on replay, where the proposal is re-rendered long after it was decided.
@@ -626,7 +792,11 @@ function childEvent(ev) {
     case 'text.delta': {
       let said = log.lastElementChild;
       if (!said || !said.classList.contains('said')) said = log.appendChild(el('div', 'said'));
-      said.textContent += ev.text;
+      /* Same batching as the main transcript, and for the same reason: a
+         subagent narrating a long search is the fastest text on the page. */
+      queue(said, ev.text, (node, chunk) => {
+        node.textContent += chunk;
+      });
       break;
     }
     case 'tool.proposed':
@@ -641,6 +811,9 @@ function childEvent(ev) {
       toolOutput(ev.call_id, ev.text, ev.stream);
       break;
     case 'tool.completed':
+      /* The card is about to be folded to a line and measured; the log inside
+         it is not, but the output being written to it is. */
+      flushStream();
       toolDone(ev.result);
       break;
     case 'tool.denied':
@@ -988,6 +1161,14 @@ function handleAgentEvent(ev) {
       appendText(ev.text);
       break;
 
+    /* Anything that rebuilds the transcript's children out from under a queued
+       write has to hand those writes back first, or they land on a node that is
+       about to be detached. Cheap when nothing is pending, which is all but the
+       streaming paths. */
+    case 'text.flush':
+      flushStream();
+      break;
+
     case 'thinking.delta':
       appendThinking(ev.text);
       break;
@@ -1035,6 +1216,12 @@ function handleAgentEvent(ev) {
       break;
 
     case 'turn.completed': {
+      /* The turn's last words are almost certainly still queued. This card is
+         the end of the turn, so anything buffered has to land before it — an
+         answer that is missing its final sentence because the socket closed on
+         the same frame is the sort of thing that gets reported as "it cuts off
+         at the end". */
+      flushStream();
       setBusy(false);
       state.turnNode = null;
       companion.set('idle');
@@ -1046,6 +1233,10 @@ function handleAgentEvent(ev) {
       }
       state.turnStart = 0;
       changedCard();
+      // How full it is now. The turn event carries it, so this costs nothing
+      // and is right for the moment the turn ended rather than for whenever
+      // somebody thought to ask.
+      if (ev.context) renderContext(ev.context);
       if (ev.stop_reason === 'interrupted') notice('Interrupted.');
       else if (ev.stop_reason === 'max_steps') notice('Stopped: too many steps.', 'error');
       else if (ev.stop_reason === 'error') companion.flash('error');
@@ -1054,6 +1245,7 @@ function handleAgentEvent(ev) {
     }
 
     case 'error':
+      flushStream();
       notice(ev.message, 'error');
       setBusy(false);
       companion.set('idle');
@@ -1432,6 +1624,7 @@ function wireBrowserChoice() {
 const SETTINGS_TABS = {
   'tab-browser': { panel: 'panel-browser', load: () => loadBrowserChoices() },
   'tab-connections': { panel: 'panel-connections', load: () => openConnections() },
+  'tab-updates': { panel: 'panel-updates', load: () => wireUpdates() },
 };
 
 function showSettingsTab(id) {
@@ -1451,7 +1644,13 @@ function wireSettings(onConnectionsChanged) {
   $('#open-settings').onclick = () => {
     showSettingsTab('tab-browser');
     $('#settings-dialog').showModal();
+    watchUpdates(true);
   };
+
+  // The update poll only runs while this dialog is open. A progress bar
+  // updating itself in a window nobody is looking at is work for nobody, and
+  // the rule this project already follows for a voice call left running.
+  $('#settings-dialog').addEventListener('close', () => watchUpdates(false));
 
   $('#settings-close').onclick = () => {
     $('#settings-dialog').close();
@@ -1473,15 +1672,62 @@ function wireSettings(onConnectionsChanged) {
 let refreshTimer = null;
 function refreshSessionsSoon() {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => loadSessions().catch(() => {}), 700);
+  /* Cleared as the timer fires, not left behind: `pollSessions` stands down
+     while one of these is pending, and a handle that outlived its own timeout
+     would stand it down forever. */
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    loadSessions().catch(() => {});
+  }, 700);
 }
+
+/* What the sidebar is about to draw, as one string. This is the change test.
+   `loadSessions` used to sit on a five-second timer and rebuild the whole list
+   on every tick, so an idle tab fetched a JSON summary of every session and
+   recreated a hundred DOM nodes twelve times a minute to produce a list
+   identical to the one already on screen — the same cost whether anything had
+   happened or not, which is the wrong shape for a poll.
+
+   So the fetch happens when something might have changed, and the rebuild only
+   when the answer actually differs.
+
+   `idle_for` is deliberately not in the fingerprint. It counts up every
+   second, so hashing it would report a change on every poll and defeat the
+   whole thing. What the row shows is `ago(idle_for)`, and that only ever
+   changes at a minute, an hour or a day — so the fingerprint records which of
+   those four bands the session is in, and the text is kept current locally by
+   `restateTimes` instead. `state.sessionId` is in the fingerprint because it
+   decides `aria-current`: selecting a session has to redraw the list even
+   though no session changed. */
+function sessionFingerprint(sessions) {
+  return JSON.stringify([
+    state.sessionId,
+    sessions.map((s) => [
+      s.id, s.title, s.root, s.model, s.turns,
+      s.busy ? 1 : 0, s.waiting_on || '',
+      s.idle_for < 60 ? 0 : s.idle_for < 3600 ? 1 : s.idle_for < 86400 ? 2 : 3,
+    ]),
+  ]);
+}
+
+/* The last thing the sidebar was drawn from. Cleared on teardown so a new
+   session cannot inherit a stale "already up to date" and skip its first
+   render. */
+let lastPrint = '';
+
+/* When that draw happened, so `restateTimes` can work out how far the server's
+   `idle_for` has aged without asking it again. */
+let loadedAt = Date.now();
+
+/* The rows on screen, so the relative times can be re-stated without a fetch. */
+const sessionRows = new Map();
 
 async function loadSessions() {
   const res = await api('/api/sessions');
   if (!res || !res.ok) return;
   const { sessions } = await res.json();
 
-  // The poll knows the truth sooner than the socket does. If the session we
+  // This knows the truth sooner than the socket does. If the session we
   // are holding is not in the list, it is gone — the daemon was restarted —
   // and waiting for the websocket to work that out means sitting in backoff
   // for up to twenty seconds on an id that will never resolve.
@@ -1504,12 +1750,21 @@ async function loadSessions() {
     if (resume) openSession(resume);
   }
 
+  // Nothing that goes on screen has changed, so stop before touching the DOM.
+  // The relative times are the one thing that keeps moving, and they are
+  // handled locally by `restateTimes` without a fetch.
+  const print = sessionFingerprint(sessions);
+  if (print === lastPrint) return;
+  lastPrint = print;
+  loadedAt = Date.now();
+
   // Grouped by working root. A root is the only thing a session is really
   // *about* — everything else about it is history — so it is what the list
   // sorts itself under, and one machine running three projects reads as
   // three projects rather than as nine chats.
   const list = $('#sessions');
   list.textContent = '';
+  sessionRows.clear();
 
   const roots = new Map();
   for (const s of sessions) {
@@ -1542,13 +1797,32 @@ async function loadSessions() {
       // label, which is what a screen reader and a hover both get.
       li.appendChild(dot);
       li.appendChild(el('span', 'name', s.title || s.id));
-      li.appendChild(el('span', 'when', s.busy ? 'now' : ago(s.idle_for)));
+      const when = el('span', 'when', s.busy ? 'now' : ago(s.idle_for));
+      li.appendChild(when);
       li.title = `${status} · ${s.model}`;
       li.setAttribute('aria-label', `${s.title || s.id} — ${status}`);
 
       li.onclick = () => openSession(s);
+      sessionRows.set(s.id, { when, summary: s });
       list.appendChild(li);
     }
+  }
+}
+
+/* "3m" has to become "1h" on its own. A local timer, and only for the text: no
+   fetch, no rebuild, and it walks the rows rather than the server's session
+   list. It is not a replacement for the poll. The poll watches for sessions
+   appearing and disappearing, which this cannot see; this only keeps text that
+   is already on screen honest as it ages. */
+function restateTimes() {
+  // Nothing drawn yet, so there is nothing to age. `loadedAt` is set when the
+  // first draw happens, and until then it holds page-load time, which would
+  // subtract time the rows have not been up for.
+  if (!sessionRows.size) return;
+  const elapsed = Math.floor((Date.now() - loadedAt) / 1000);
+  for (const { when, summary } of sessionRows.values()) {
+    if (summary.busy) continue;              // "now" does not go stale
+    when.textContent = ago(Math.max(0, summary.idle_for - elapsed));
   }
 }
 
@@ -1585,6 +1859,11 @@ function dressChips(patch) {
     root.querySelector('span').textContent = basename(info.root);
     root.title = info.root;
   }
+  // The commit bar follows the project you are in, and hides itself where
+  // there is no repository to commit to. Called here rather than from the
+  // commit module so it changes on every root the session reports, including
+  // the ones that arrive on the socket.
+  setCommitRoot(info.root);
 
   const model = $('#model-chip');
   if (info.model) {
@@ -1665,7 +1944,6 @@ function lastSession() {
 function selectSession(id) {
   if (id === state.sessionId) return;
   clearTranscript();
-  state.tools.clear();
   state.seq = 0;
   state.turnNode = null;
   state.turnStart = 0;
@@ -1683,8 +1961,15 @@ function selectSession(id) {
   state.tasks = new Map();
   showTasks();
   hideSlash();
+  // The file list belongs to the session it was asked about; offering files
+  // from the one just left is worse than offering none.
+  resetFiles();
   loadCommands(id);
   rememberSession(id);
+  // A reattached session has the transcript but never saw the turn that
+  // produced it, so the meter is empty until it asks. Deliberately after the
+  // id is set, so the request is about the session being shown.
+  refreshContext(id);
   connectAgent(id);
   loadSessions();
 }
@@ -1739,6 +2024,9 @@ function wire() {
   });
 
   input.addEventListener('keydown', (e) => {
+    // The file list first: while it is open, Enter belongs to it, and the
+    // slash menu is not showing at the same time.
+    if (handleFileKey(e)) return;
     if (!$('#slash').hidden) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -1959,6 +2247,16 @@ wireWatch({
   attach: (id) => selectSession(id),
 });
 wireSearch();
+wireMail();
+wireCommit();
+wireContext();
+wireFiles({ sessionId, request: (path) => json(path) });
+// Once, at load, and not polled: all this does is put a dot on the Updates tab
+// so somebody finds out there is a new release without having gone looking.
+// The daemon already asked GitHub; this asks the daemon.
+json('/api/update/status').then((info) => {
+  if (info) renderUpdate(info);
+}).catch(() => {});
 // Adding or removing a connection changes what every picker on the page can
 // offer, so the whole lot is refreshed rather than the dialog patching them.
 wireConnections();
@@ -1994,6 +2292,89 @@ companion.watch((what) => {
 
 loadProviders();
 loadSessions();
-// Never allowed to throw: this poll is what notices the daemon coming back,
-// so it has to survive every second it is down.
-setInterval(() => loadSessions().catch(() => {}), 5000);
+
+/* The session list, and how often it is asked for.
+ *
+ * This used to be an unconditional five-second `setInterval`, and it is still a
+ * poll — because there is nothing else that can see it. The socket is attached
+ * to the *open* session, so a session started in another tab, or one that
+ * closed, or one that has begun waiting for an approval, is invisible from
+ * here. Replacing this with an event would mean a second socket that carries
+ * every session's events, which is a real subsystem rather than a client
+ * change, and inventing one here would be a bigger change than the problem
+ * earns. So the poll stays, and what changed is what it costs.
+ *
+ * Three things used to happen twelve times a minute regardless: a fetch, a
+ * rebuild of every row in the sidebar, and the relative times being
+ * recomputed from scratch. The last two no longer happen at all — the
+ * fingerprint in `loadSessions` means an unchanged list touches no DOM, and
+ * the times are restated locally by `restateTimes`. So an idle tab now pays
+ * one small request and nothing else, instead of a request plus a hundred
+ * nodes thrown away and rebuilt to the same shape.
+ *
+ * And it stops entirely when the tab is hidden. A tab nobody is looking at
+ * does not need a sidebar up to date, and on a laptop that is a request every
+ * five seconds for as long as the window is in the background — the exact
+ * shape of cost that is invisible on the machine and real on the battery. The
+ * refresh on becoming visible is the same one, coalesced, so returning to a tab
+ * shows the truth rather than the state it was left in. */
+let sessionTimer = null;
+let clockTimer = null;
+let sessionRefreshQueued = false;
+
+/* Never throws. The daemon can be down, and this is the thing that finds out,
+   so it has to survive every second it is. */
+function pollSessions() {
+  if (document.hidden) return;
+  // An event on the open session's socket has already asked for a refresh and
+  // it is still sitting in the debounce. Asking again now would fetch the same
+  // answer twice and let the two race to be the last writer, so this one stands
+  // down — the pending refresh is the one that is about to run anyway.
+  if (refreshTimer !== null) return;
+  loadSessions().catch(() => {});
+}
+
+function startSessionPoll() {
+  if (sessionTimer === null) sessionTimer = setInterval(pollSessions, 5000);
+  /* The relative times move on their own, with no request at all. Thirty
+     seconds is the finest any of them can read — `ago` says "12m" across a
+     span of twelve minutes and thirty seconds — so a faster tick would be
+     doing work that cannot change what is on screen. */
+  if (clockTimer === null) clockTimer = setInterval(restateTimes, 30000);
+}
+
+function stopSessionPoll() {
+  if (sessionTimer !== null) {
+    clearInterval(sessionTimer);
+    sessionTimer = null;
+  }
+  if (clockTimer !== null) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopSessionPoll();
+    return;
+  }
+  /* Queued rather than immediate: `visibilitychange` fires before the browser
+     has finished bringing the tab back, and several can arrive in a row as the
+     focus moves between windows. One refresh, once the dust settles. */
+  if (sessionRefreshQueued) return;
+  sessionRefreshQueued = true;
+  setTimeout(() => {
+    sessionRefreshQueued = false;
+    pollSessions();
+    startSessionPoll();
+  }, 250);
+});
+
+// The same "the daemon is back" signal, arriving on a fetch rather than on a
+// timer. `onReachable` in dom.js already reports the transition, and the poll
+// used to be the reason that mattered; now it is a bonus, because the poll is
+// no longer what discovers it.
+onReachable((ok) => { if (ok) pollSessions(); });
+
+startSessionPoll();

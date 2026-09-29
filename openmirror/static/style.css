@@ -23,6 +23,10 @@
   --bg-tint-a: #7c9df0;
   --bg-tint-b: #b98bd9;
   --bg-tint-c: #6fc3d6;
+  /* The grid behind the glass. Faint on purpose: it needs to be lost in a
+     24px blur, and a grid that survives *intact* would read as a spreadsheet
+     in the background rather than as frosted texture. */
+  --grid: rgba(90, 105, 145, 0.16);
 
   /* Glass, tuned the way macOS does it rather than the way most web
      glassmorphism does. The common mistake is a thin fill over a light blur,
@@ -36,7 +40,17 @@
   --edge: rgba(120, 130, 160, 0.18);
   --edge-soft: rgba(120, 130, 160, 0.11);
   --hover: rgba(90, 105, 140, 0.09);
-  --blur: 40px;
+  /* Blur radius for the glass. Not a taste setting: it is set to the point
+     where a 24px blur is actually *visible*, which needs detail behind the
+     panel to blur. See the ground below. */
+  --blur: 24px;
+  /* How much of the ground's texture reaches a panel. Detail and colour are
+     separate values because a shared `opacity` would dim the texture by the
+     same amount as the tints, and the texture is the part that has to
+     survive. At .20 a 34px grid is clearly present under clear glass and
+     gone by the middle of a panel. */
+  --detail-opacity: .20;
+  --tint-opacity: .34;
 
   --ink: #16181f;
   --dim: #5f6675;
@@ -66,6 +80,7 @@
     --bg-tint-a: #3a5db8;
     --bg-tint-b: #6d3f96;
     --bg-tint-c: #1f6b7d;
+    --grid: rgba(150, 170, 235, 0.10);
 
     --glass: rgba(19, 19, 24, 0.90);
     --glass-strong: rgba(26, 26, 33, 0.95);
@@ -109,19 +124,61 @@ body {
   overflow: hidden;
 }
 
-/* The ground the glass blurs. Three wide, soft tints that drift very slowly —
-   slowly enough that it reads as depth rather than as animation. */
+/* The ground the glass blurs.
+
+   Three things have to be true for `backdrop-filter` to be visible, and the
+   first two are the ones that are usually missed:
+
+   1. There is detail behind the panel. A smooth gradient has no detail, so
+      blurring it is a no-op — the surface either looks like the gradient or
+      looks like a flat fill, and people conclude the blur is broken. So the
+      ground carries a grid and fine noise, both sharp: they are what a 24px
+      radius actually dissolves, and their partial survival at a panel edge is
+      the frosted look.
+   2. The panel is not opaque. `--glass` is a fill *over* the blurred ground,
+      not a replacement for it.
+   3. Only one panel in a stack blurs. Nested `backdrop-filter` surfaces
+      composite — each blurs the output of the last — so a `#field` inside a
+      `#composer` inside a `main`, all at 40px, turns the glass to porridge
+      and costs three full-screen blurs per frame.
+
+   The detail and the colour are two elements rather than one, for a reason
+   that is easy to get wrong: a single `opacity` on the combined layer dims
+   the detail and the tints by the same amount, and detail is what has to
+   survive. Separating them also means the detail can stay still while the
+   colour drifts — the tints are decoration and move; the texture is the
+   surface and does not. */
+
 body::before {
   content: '';
   position: fixed;
-  inset: -25%;
+  inset: 0;
+  z-index: -1;
+  background:
+    /* Fine noise: invisible alone, essential behind a blur. The one thing on
+       this layer with detail at every scale, and a single small tile, so it
+       costs one decode rather than a full-screen gradient. */
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E"),
+    /* A grid, for the same reason and because a grid is the one pattern a
+       person can recognise as *blurred*, which is what sells the effect. */
+    linear-gradient(to right, var(--grid) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px) 0 0 / 34px 34px;
+  opacity: var(--detail-opacity);
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
   z-index: -1;
   background:
     radial-gradient(38% 44% at 18% 22%, var(--bg-tint-a) 0%, transparent 62%),
     radial-gradient(34% 40% at 82% 18%, var(--bg-tint-b) 0%, transparent 60%),
     radial-gradient(44% 46% at 62% 88%, var(--bg-tint-c) 0%, transparent 64%);
-  opacity: .20;
-  filter: blur(80px);
+  /* These used to be pre-blurred with `filter: blur(80px)`, which is what
+     made the glass invisible: blurring them here left nothing for the panel
+     to blur. Soft gradients are soft by construction. */
+  opacity: var(--tint-opacity);
   animation: drift 44s ease-in-out infinite alternate;
 }
 
@@ -133,16 +190,38 @@ body::before {
 /* Motion is decoration here, and decoration that cannot be turned off is a
    problem for anyone who gets sick from it. */
 @media (prefers-reduced-motion: reduce) {
-  body::before { animation: none; }
+  body::after { animation: none; }
   * { transition: none !important; animation: none !important; }
 }
 
-/* One mixin, applied everywhere glass is wanted. -webkit- included because
-   WebKitGTK is what the Linux desktop shell renders in. */
-#sidebar, #bar, #field, #voice-strip, .tool.card, .question, .changed, dialog, .companion-menu {
+/* One blur, and only one.
+
+   These are the surfaces that show the ground. They are all siblings under
+   `body`, or direct children of it, so no two of them are nested: `#bar`,
+   `#field` and `#voice-strip` all sit in `main`, and `main` itself does not
+   blur. Stacking these is what previously made the glass look like a smooth
+   wash — each panel blurred the already-blurred result of the one below it,
+   three times over, for no visual gain.
+
+   -webkit- included because WebKitGTK is what the Linux desktop shell renders
+   in. */
+#sidebar, #bar, #field, #voice-strip, dialog, .companion-menu {
   -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
   backdrop-filter: blur(var(--blur)) saturate(180%);
 }
+
+/* The transcript's own cards, inside `main`. These blur too — a tool card
+   floating over a moving ground is the clearest case of the effect — but they
+   are not nested in another blur, so they cost one each. */
+.tool.card, .question, .changed {
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+}
+
+/* `main` and `#composer` are fills, not glass. They sit over other glass, so
+   blurring them would blur blur. Their separation from what is behind them
+   comes from the fill and the hairline, which cost nothing. */
+main, #composer { -webkit-backdrop-filter: none; backdrop-filter: none; }
 
 .spacer { flex: 1; }
 .meta { color: var(--dim); font-size: 12px; }
@@ -238,10 +317,9 @@ button.sec-head:hover { color: var(--dim); background: none; }
 main {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
   /* Thinner than the chrome around it, so the window reads as layered
-     surfaces rather than one flat sheet. */
+     surfaces rather than one flat sheet. A fill, not glass — see the note by
+     the backdrop-filter list above. */
   background: var(--glass-weak);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
-  backdrop-filter: blur(var(--blur)) saturate(180%);
 }
 
 #bar {
@@ -781,11 +859,19 @@ dialog menu { display: flex; gap: 9px; justify-content: flex-end; margin: 18px 0
    page background lets the panels blur the real desktop instead of a painted
    one — which is the whole point of the treatment. */
 body.native { background: transparent; }
-body.native::before { display: none; }
+/* Both ground layers go, not just one. In the desktop shell the ground behind
+   the glass is the real desktop, which is the best possible thing to blur —
+   and painting a gradient field over it would replace that with a flat wash
+   and hide the window's own translucency, which is the entire point of the
+   native path. */
+body.native::before, body.native::after { display: none; }
+/* No ground of our own means no detail for a backdrop blur to act on, so the
+   fill carries more of the load here than it does in a browser tab. */
 body.native #sidebar,
 body.native #bar,
 body.native #composer,
-body.native #voice-strip { background: var(--glass-weak); }
+body.native #voice-strip,
+body.native #field { background: var(--glass-strong); }
 
 /* --- companions ----------------------------------------------------------- */
 
@@ -1415,6 +1501,220 @@ button.ghost.danger:hover { border-color: var(--danger); }
   width: min(100%, var(--column)); align-self: center;
 }
 
+/* --- updates ---------------------------------------------------------------- */
+
+/* The dot on the tab, so an update is findable without going looking for it.
+   Deliberately not a banner: an update notice that covers the work you were
+   doing is an update notice that gets dismissed, and the tab dot says the
+   same thing without taking anything away. */
+.tab-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok); display: inline-block; margin-left: 2px;
+}
+
+.update-state { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 4px; }
+.update-available { font-size: 13px; color: var(--ink); margin: 0; font-weight: 600; }
+.update-error { font-size: 12.5px; color: var(--dim); margin: 0; }
+.update-notes {
+  margin: 10px 0; padding: 10px 12px; max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--edge-soft); border-radius: 9px;
+}
+.update-notes-body {
+  margin: 0; font-family: inherit; font-size: 12.5px; line-height: 1.55;
+  white-space: pre-wrap; color: var(--dim);
+}
+.update-link { font-size: 12px; }
+
+.update-bar {
+  display: block; height: 4px; border-radius: 999px;
+  background: var(--edge-soft); overflow: hidden; margin-bottom: 4px;
+}
+.update-bar > span {
+  display: block; height: 100%; width: 0; background: var(--ok);
+  /* Width is the one property here that changes every tick, and animating it
+     costs a compositor frame for a bar two pixels tall. Not animated. */
+}
+#update-progress-text { font-size: 11.5px; color: var(--faint); }
+
+/* --- mail ---------------------------------------------------------------- */
+
+/* Three columns, and the right one is the reader rather than a modal. A
+   message you are answering should be visible while you answer it: the
+   difference between reading a thread and guessing at it is the whole
+   difference between a reply and a wasted one. */
+.mail-pane { overflow: hidden; }
+.mail-note { padding: 12px 18px 0; flex: none; }
+.mail-note:empty { display: none; }
+
+.mail-split {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 168px minmax(240px, 340px) 1fr;
+}
+.mail-folders {
+  border-right: 1px solid var(--edge-soft); overflow-y: auto; padding: 10px 8px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.mail-folder {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 9px; border: 0; border-radius: 7px; background: none;
+  color: var(--dim); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.mail-folder:hover { background: var(--edge-soft); color: var(--ink); }
+.mail-folder[aria-current='true'] { background: var(--edge-soft); color: var(--ink); font-weight: 600; }
+.mail-folder .count {
+  margin-left: auto; font-size: 10.5px; color: var(--faint);
+  background: var(--edge-soft); border-radius: 999px; padding: 0 6px;
+}
+
+.mail-list { border-right: 1px solid var(--edge-soft); overflow-y: auto; padding: 6px; }
+.mail-row {
+  display: flex; flex-direction: column; gap: 2px; width: 100%;
+  padding: 8px 10px; margin-bottom: 1px; border: 0; border-radius: 8px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.mail-row:hover { background: var(--edge-soft); }
+.mail-row .row-top { display: flex; align-items: baseline; gap: 7px; }
+.mail-row .who { font-size: 12.5px; color: var(--ink); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An unread message is marked by weight rather than by a colour, so it is
+   still distinguishable in a pane that has been dimmed. */
+.mail-row.unread .who { font-weight: 700; }
+.mail-row .when { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.mail-row .dot { font-size: 8px; color: var(--accent, var(--ok)); line-height: 1; }
+.mail-row .meta { font-size: 10.5px; }
+.mail-row .subject {
+  font-size: 12.5px; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mail-row .snippet {
+  font-size: 11.5px; color: var(--faint); line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+.mail-right { min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.mail-right > article { display: flex; flex-direction: column; min-height: 0; padding: 14px 18px 24px; }
+.mail-right header { display: flex; align-items: center; gap: 8px; flex: none; }
+.mail-right h2 { font-size: 15px; margin: 0; flex: 1; min-width: 0; }
+#mail-reader-from { margin: 6px 0 0; word-break: break-all; }
+.mail-right pre {
+  flex: 1; min-height: 120px; margin: 12px 0 0; white-space: pre-wrap;
+  font-family: inherit; font-size: 13px; line-height: 1.65; color: var(--ink);
+}
+
+.mail-compose { flex: none; display: flex; flex-direction: column; gap: 7px; margin-top: 16px;
+  padding-top: 14px; border-top: 1px solid var(--edge-soft); }
+.mail-compose label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--faint); }
+.mail-compose textarea { font: inherit; font-size: 13px; line-height: 1.6; resize: vertical; }
+.mail-actions { display: flex; align-items: center; gap: 8px; }
+.mail-quoted {
+  max-height: 92px; overflow-y: auto; margin: 0; padding: 7px 9px;
+  border-left: 2px solid var(--edge-soft); color: var(--faint);
+  font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
+}
+
+@media (max-width: 900px) {
+  /* Two columns then, and the reader takes the whole width when it is open —
+     the folder list is the one that can afford to be dropped, because it is
+     a list of short names and the unread count is on the rail. */
+  .mail-split { grid-template-columns: 132px 1fr; }
+  .mail-right {
+    position: absolute; inset: 0; background: var(--glass-strong); z-index: 4;
+  }
+  .mail-right:empty, .mail-right > article:not([hidden]) { display: flex; }
+}
+
+/* --- file mentions ---------------------------------------------------------- */
+
+/* Sits where the slash menu does, and hides the same way: one list of
+   completions at a time, because two open at once is a menu and a menu is
+   worse than a menu. */
+/* Exactly where the slash menu is, with the same offset. Two completion
+   lists are never open at once — `handleFileKey` is checked first and
+   `render` replaces rather than appends — so they can share a position
+   without colliding, and sharing one is why they look like the same thing. */
+#files {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 6;
+  list-style: none; margin: 0; padding: 4px;
+  background: var(--glass-strong); border: 1px solid var(--edge); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lift);
+  max-height: 260px; overflow-y: auto;
+}
+.file-pick {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 5px 8px; border: 0; border-radius: 6px; background: none;
+  color: var(--dim); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.file-pick.at { background: var(--edge-soft); color: var(--ink); }
+.file-pick .path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  /* Monospace for the part that identifies the file. A path is a path, and
+     proportional digits make `l` and `1` the same width. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.file-pick .size { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+/* --- context meter --------------------------------------------------------- */
+
+/* Beside the composer controls, not in the header. It is a fact about the
+   conversation you are about to have another turn of, and it belongs next to
+   the thing that would change it. */
+.context-meter {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 0; border-radius: 999px;
+  background: none; color: var(--faint); font: inherit; font-size: 11px;
+  cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.context-meter:hover { color: var(--dim); background: var(--edge-soft); }
+.ctx-bar {
+  display: block; width: 44px; height: 3px; border-radius: 999px;
+  background: var(--edge-soft); overflow: hidden;
+}
+.ctx-bar > span {
+  display: block; height: 100%; width: 0; background: var(--faint);
+  /* Width changes once per turn, not per frame, so there is nothing to
+     animate and animating it would only cost a compositor pass. */
+  transition: none;
+}
+.ctx-bar > span.warn { background: var(--warn, #c9a227); }
+.ctx-bar > span.full { background: var(--danger, #d05a4e); }
+
+/* --- commit ---------------------------------------------------------------- */
+
+/* The bar in the header, and the dialog. The bar counts changed files rather
+   than lines because that is the number that answers "is there anything to
+   do here" — a diffstat of a reformat is large and says nothing. */
+#commit-slot { display: inline-flex; }
+#commit-open { cursor: pointer; }
+#commit-open:hover { border-color: var(--edge); color: var(--ink); }
+
+#commit-dialog { width: min(680px, 92vw); }
+#commit-dialog h2 { margin-top: 0; }
+#commit-dialog textarea { font: inherit; font-size: 13px; line-height: 1.55; resize: vertical; }
+/* Scoped to the form's *own* labels. The file rows are labels too, and a
+   bare `#commit-dialog label` outranks `.commit-file`, which stacked the
+   checkbox, the path and the tag into three centred lines. */
+#commit-dialog > form > label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
+
+.commit-files {
+  max-height: 210px; overflow-y: auto; margin: 12px 0;
+  border: 1px solid var(--edge-soft); border-radius: 9px; padding: 8px 10px;
+}
+.commit-files:empty { display: none; }
+.commit-group { display: flex; flex-direction: column; gap: 1px; }
+.commit-group + .commit-group { margin-top: 9px; }
+.commit-group .label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--faint); margin-bottom: 3px;
+}
+.commit-file { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 2px 0; cursor: pointer; }
+.commit-file .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-file .tag {
+  font-size: 10px; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--edge-soft); color: var(--faint);
+}
+.commit-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+#commit-note { min-height: 1.2em; }
+
 /* --- connections --------------------------------------------------------- */
 
 .conn-routes { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
@@ -1436,3 +1736,46 @@ button.ghost.danger:hover { border-color: var(--danger); }
 .conn-list .tag.local { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
 .conn-list .tag.tor { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
 .conn-add { display: flex; flex-direction: column; gap: 9px; }
+
+/* --- the sign-in gate ----------------------------------------------------- */
+
+/* Shown when the daemon answers 401. Everything behind it is already rendered,
+   so the backdrop has to actually obscure it rather than merely sit on top —
+   otherwise a locked install shows the shape of the interface it is refusing. */
+.gate {
+  position: fixed; inset: 0; z-index: 999;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 12px;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(22px) saturate(1.2);
+  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+}
+.gate[hidden] { display: none; }
+
+.gate h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.gate-note { margin: 0; max-width: 38ch; text-align: center; color: var(--dim); font-size: 12.5px; line-height: 1.55; }
+
+.gate form { display: flex; gap: 8px; margin-top: 4px; }
+.gate input {
+  width: 260px; padding: 9px 12px;
+  font-family: var(--mono); font-size: 13px; color: var(--ink);
+  background: var(--glass-strong);
+  border: 1px solid var(--edge); border-radius: var(--radius-sm);
+}
+.gate input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.gate button {
+  padding: 9px 16px; border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: var(--solid); color: var(--on-solid); font-size: 13px; font-weight: 550; cursor: pointer;
+}
+.gate button:hover { opacity: .9; }
+
+/* Announced, not merely coloured: a wrong token with no visible change reads
+   as a page that did not notice the click. */
+.gate-problem { margin: 0; min-height: 1.2em; color: var(--danger); font-size: 12.5px; }
+.gate-problem:empty { min-height: 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .gate { animation: gate-in .22s cubic-bezier(.2, .8, .3, 1); }
+  @keyframes gate-in { from { opacity: 0; } to { opacity: 1; } }
+}

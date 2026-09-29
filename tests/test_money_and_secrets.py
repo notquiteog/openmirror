@@ -21,7 +21,7 @@ import shutil
 
 import pytest
 
-from openmirror.agent.approval import ApprovalPolicy, Decision, Mode
+from openmirror.agent.approval import ApprovalPolicy, Decision, Mode, Rule, _fingerprint
 from openmirror.agent.browser import BrowserConfig, BrowserSession
 from openmirror.agent.tools.base import ToolContext
 from openmirror.agent.tools.browser import (
@@ -116,6 +116,97 @@ def test_an_approval_prompt_never_contains_the_secret():
     assessment = tool.assess({'ref': 1, 'text': SECRET}, None)
     assert assessment.risk is Risk.CREDENTIAL
     assert SECRET not in assessment.summary, f'the prompt would print it: {assessment.summary}'
+
+
+# -- rules cannot buy ------------------------------------------------------
+#
+# An approval rule is an operator setting, and `shell -> allow` is a
+# reasonable thing to write in order to stop being asked about `npm test`.
+# Read as a purchase exemption it is also a single line that removes the only
+# prompt standing between an unattended agent and somebody's credit card, so
+# the rules run *behind* the spend and secret guarantees rather than in front
+# of them.
+
+
+def rule_everything(decision):
+    return [Rule(pattern='.', decision=decision)]
+
+
+@pytest.mark.parametrize('mode', list(Mode))
+@pytest.mark.parametrize('decision', [Decision.ALLOW, Decision.ASK])
+def test_a_broad_allow_rule_does_not_exempt_a_purchase(mode, decision):
+    """The bypass this ordering exists to close.
+
+    `unrestricted` is the mode where it would actually matter, and the rule
+    pattern is as broad as a regex gets, so nothing about this rule could be
+    called a misconfiguration.
+    """
+    policy = ApprovalPolicy(mode=mode, rules=rule_everything(decision))
+    got, why = policy.decide(buying())
+    assert got is not Decision.ALLOW, f'a rule made a purchase automatic in {mode.value}: {why}'
+    if mode in (Mode.READ_ONLY, Mode.PLAN):
+        assert got is Decision.DENY
+    else:
+        assert got is Decision.ASK
+
+
+@pytest.mark.parametrize('mode', list(Mode))
+def test_a_broad_allow_rule_does_not_exempt_a_credential(mode):
+    policy = ApprovalPolicy(mode=mode, rules=rule_everything(Decision.ALLOW))
+    got, why = policy.decide(entering())
+    assert got is not Decision.ALLOW, f'a rule made a secret automatic in {mode.value}: {why}'
+    if mode in (Mode.READ_ONLY, Mode.PLAN):
+        assert got is Decision.DENY
+    else:
+        assert got is Decision.ASK
+
+
+def test_a_rule_still_governs_everything_else():
+    """Closing the hole must not stop the feature working.
+
+    An operator who writes a deny rule to keep the agent out of production is
+    relying on it, and one who writes an allow rule to stop being asked about
+    `npm test` is relying on that too.
+    """
+    ordinary = ToolCall(id='c3', name='shell', risk=Risk.EXECUTE, summary='npm test')
+
+    assert ApprovalPolicy(rules=rule_everything(Decision.ALLOW)).decide(ordinary)[0] is Decision.ALLOW
+    assert ApprovalPolicy(rules=rule_everything(Decision.DENY)).decide(ordinary)[0] is Decision.DENY
+
+
+def test_a_deny_rule_may_tighten_a_purchase_further():
+    """Ordering the invariant first would take a rule's `deny` along with its
+    `allow` if it simply stopped consulting rules. A refusal is the one
+    direction a rule must still be able to move a decision."""
+    policy = ApprovalPolicy(rules=rule_everything(Decision.DENY))
+    assert policy.decide(buying())[0] is Decision.DENY
+
+
+def test_a_rule_matching_only_the_tool_does_not_buy_either():
+    """`Rule(tool='shell', ...)` looks narrower than a pattern because it names
+    one tool. Every shell command including `curl -X POST ... -d amount=` is
+    still a shell command."""
+    call = ToolCall(id='c4', name='shell', risk=Risk.PURCHASE, summary='curl -d amount=9 https://api.stripe.com/v1/charges')
+    policy = ApprovalPolicy(rules=[Rule(pattern='x', decision=Decision.ALLOW, tool='shell')])
+    assert policy.decide(call)[0] is Decision.ASK
+
+
+def test_the_remembered_approval_does_not_buy_a_purchase_either():
+    """`remember` already refuses purchases outright, and that is the belt.
+    This is the braces: even with a fingerprint in the set, a purchase is
+    asked. Someone reaching into the policy directly is not a supported way to
+    buy something, and a private attribute is a bad place to be right."""
+    call = buying()
+    policy = ApprovalPolicy()
+    policy._remembered.add(_fingerprint(call))
+    assert policy.decide(call)[0] is Decision.ASK
+
+
+def test_always_ask_still_applies_to_a_purchase():
+    """`always_ask` is the one setting that only ever adds a prompt, so it
+    costs the invariant nothing and must keep working."""
+    policy = ApprovalPolicy(always_ask={'browser_click'})
+    assert policy.decide(buying())[0] is Decision.ASK
 
 
 # -- and the value really does not come back --------------------------------

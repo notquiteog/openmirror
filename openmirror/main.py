@@ -19,14 +19,18 @@ from openmirror.config import config
 from openmirror.providers.bootstrap import bootstrap
 from openmirror.providers.registry import registry
 from openmirror.routers import agent as agent_router
+from openmirror.routers import auth as auth_router
 from openmirror.routers import autopilot as autopilot_router
 from openmirror.routers import browser as browser_router
+from openmirror.routers import git as git_router
+from openmirror.routers import mail as mail_router
 from openmirror.routers import mcp as mcp_router
 from openmirror.routers import media as media_router
 from openmirror.routers import memory as memory_router
 from openmirror.routers import providers as providers_router
 from openmirror.routers import realtime as realtime_router
 from openmirror.routers import search as search_router
+from openmirror.routers import updates as updates_router
 from openmirror.routers import voice as voice_router
 
 log = logging.getLogger(__name__)
@@ -110,9 +114,37 @@ async def lifespan(app: FastAPI):
             )
 
     log.info('workspace: %s   approval: %s', config.workspace, config.approval_mode)
-    if not config.auth_token and config.host not in ('127.0.0.1', 'localhost', '::1'):
-        # Worth saying loudly: this process runs commands on the machine.
-        log.warning('listening on %s with no OPENMIRROR_TOKEN set', config.host)
+    if not config.auth_token and not auth_router.is_loopback(config.host):
+        # Refused rather than warned. This process runs commands on this
+        # machine: an unauthenticated one on a network interface means any
+        # other machine on the network can create a session in `unrestricted`
+        # and start shelling out as the person who installed it. A warning in
+        # a log file is not a boundary, and the default (loopback, no token)
+        # never reaches this.
+        raise SystemExit(
+            f'openmirror is bound to {config.host} with no OPENMIRROR_TOKEN set. '
+            'Refusing to serve an unauthenticated agent on a network interface — '
+            'set OPENMIRROR_TOKEN, or bind to 127.0.0.1.'
+        )
+
+    # Asked in the background and never awaited, so a slow or unreachable
+    # GitHub cannot delay the window appearing — which is the whole point of
+    # a start-up check. `check_on_start` enforces its own conditions: only
+    # when the flag is on, never while something is running, and never when
+    # `local_only` is set, because somebody who asked for no remote traffic
+    # did not ask for a version check either.
+    async def _update_check() -> None:
+        from openmirror.routers.updates import check_on_start
+
+        try:
+            await check_on_start()
+        except Exception:  # noqa: BLE001
+            # A version check that raises is not worth failing a start-up
+            # over, and there is nothing useful to do about it here.
+            log.debug('the update check failed', exc_info=True)
+
+    asyncio.create_task(_update_check())
+
     yield
 
     # Cancelled rather than awaited: it is a rebuild of derived data and the
@@ -142,7 +174,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title='openmirror', version='0.1.0', lifespan=lifespan)
 
+# The token is enforced here, once, as middleware — before routing decides
+# anything, so a route added next year is covered without anyone remembering.
+#
+# Not `include_router(..., dependencies=[...])`: on the FastAPI this ships with
+# that is silently dropped and the endpoint runs anyway, which is worse than no
+# guard at all because the code reads as though it is protected. `auth.py` says
+# the same thing at greater length.
+app.add_middleware(auth_router.TokenMiddleware)
+
+# The sign-in exchange, and nothing else, is reachable unauthenticated. It is
+# the route that takes a token, so requiring one to reach it is circular.
+app.include_router(auth_router.router)
+
+# The MCP endpoint is exempt from the token above and keeps its own stricter
+# `OPENMIRROR_MCP_SERVE_TOKEN` check, which already refuses to mount on a
+# non-loopback bind without one. It is in the router's own prefix exemption.
 app.include_router(agent_router.router)
+# The session REST surface, mounted under the same middleware as everything
+# else: create/list, the toolset listing, slash commands, background tasks,
+# and rewind. It is a second router rather than part of the websocket one
+# because the websockets are streams and these are ordinary request/response
+# calls, and because a browser tab that wants the session list should not have
+# to open a socket to ask for it.
 app.include_router(agent_router.http)
 app.include_router(voice_router.router)
 app.include_router(providers_router.router)
@@ -150,9 +204,9 @@ app.include_router(memory_router.router)
 app.include_router(media_router.router)
 app.include_router(search_router.router)
 app.include_router(browser_router.router)
-# Mounted always, and 404s until start-up decides this install serves MCP —
-# the same shape as the memory router, for the same reason: a feature that is
-# off should look absent rather than broken.
+app.include_router(updates_router.router)
+app.include_router(git_router.router)
+app.include_router(mail_router.router)
 app.include_router(mcp_router.router)
 app.include_router(realtime_router.router)
 app.include_router(autopilot_router.router)

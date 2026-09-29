@@ -72,17 +72,27 @@ def _authorise(request: Request) -> None:
 
     `compare_digest` rather than `==` because a token compared with `==` leaks
     its length and prefix to anyone patient enough to time the answers.
+
+    **Either token opens it.** `OPENMIRROR_MCP_SERVE_TOKEN` is the specific one
+    and remains the stricter of the two, because `main()` refuses to serve this
+    router on a non-loopback bind without it. `OPENMIRROR_TOKEN` is accepted as
+    well, so a person who has already secured the rest of the daemon is not left
+    with an endpoint that wants a second secret they have to go and invent. The
+    specific token opens it when set; the general one opens it either way, which
+    is the arrangement that cannot lock anybody out while still honouring a
+    deliberate MCP-only secret.
     """
-    expected = config.mcp_serve_token
-    if not expected:
+    if not (config.mcp_serve_token or config.auth_token):
         return
     header = request.headers.get('Authorization', '')
     offered = header[7:].strip() if header.lower().startswith('bearer ') else ''
-    if not offered or not hmac.compare_digest(offered, expected):
-        raise HTTPException(
-            status_code=401,
-            detail='this MCP endpoint needs a bearer token (OPENMIRROR_MCP_SERVE_TOKEN)',
-        )
+    for env in (config.mcp_serve_token, config.auth_token):
+        if env and offered and hmac.compare_digest(offered, env):
+            return
+    raise HTTPException(
+        status_code=401,
+        detail='this MCP endpoint needs a bearer token (OPENMIRROR_MCP_SERVE_TOKEN)',
+    )
 
 
 async def _handle_payload(payload: Any) -> Any:

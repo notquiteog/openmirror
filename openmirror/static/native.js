@@ -36,3 +36,27 @@ async function notify(api) {
     console.warn('openmirror: could not notify', err);
   }
 }
+
+/* Installing a downloaded update.
+ *
+ * A browser tab cannot do this and does not pretend to: the page calls this
+ * only when the app is there. The app checks the path, starts the installer
+ * and restarts — see `apply_update` in `desktop/src-tauri/src/main.rs` for why
+ * that is the app's job and not this page's.
+ *
+ * Returns a string either way, because "it saved it and could not start it" is
+ * a better answer than an exception, and the person still has to do the last
+ * step themselves. */
+export async function installUpdate(path) {
+  if (!shell || !shell.invoke) return 'saved';
+  try {
+    return await shell.invoke('apply_update', { path });
+  } catch (err) {
+    console.warn('openmirror: could not start the update', err);
+    return `saved, but it could not be started: ${err}`;
+  }
+}
+
+/* Whether this page is inside the desktop app, which decides whether an
+   update can be installed or only downloaded. */
+export const isDesktop = Boolean(shell && shell.invoke);

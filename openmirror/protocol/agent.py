@@ -50,12 +50,19 @@ class Risk(StrEnum):
     DESTRUCTIVE = 'destructive'  # deletes, force-pushes, drops, overwrites
     NETWORK = 'network'        # reaches something outside this machine
 
-    # The two below are a separate axis from the five above, and deliberately
-    # so. "Let it do what it likes to my computer" and "let it spend my money"
-    # are different decisions, and a mode that conflates them will eventually
-    # buy something because a page said to.
+    # The three below are a separate axis from the five above, and deliberately
+    # so. "Let it do what it likes to my computer", "let it spend my money" and
+    # "let it write to other people" are three different decisions, and a mode
+    # that conflates them will eventually buy something because a page said to
+    # — or send something on the owner's behalf that the owner would not have
+    # sent, which is the same class of failure with a longer tail: the message
+    # is read by a colleague, under the owner's name, and cannot be recalled.
     PURCHASE = 'purchase'      # spends money or commits to a transaction
     CREDENTIAL = 'credential'  # a password, card number or other secret
+    # Speaks to somebody else as the person who owns the account. Reading an
+    # inbox is `read`; *answering* is this, and the difference is that a read
+    # is invisible to the world while a send is not and is not undoable.
+    MESSAGE = 'message'
 
 
 class ToolCall(BaseModel):
@@ -220,6 +227,37 @@ class TurnCompleted(_Event):
     turn_id: str
     stop_reason: Literal['end_turn', 'interrupted', 'max_steps', 'error'] = 'end_turn'
     usage: dict[str, int] = Field(default_factory=dict)
+    #: How full the next request will be, and how much of the allowance that
+    #: is. `tokens` is the daemon's own estimate and `limit` is the point the
+    #: conversation gets summarised — both known exactly, which is why they
+    #: are here rather than a number scraped from a provider's model card.
+    #: `window` is the model's own context size when we recognise it, and
+    #: `None` otherwise: a guessed window is a wrong percentage on a bar
+    #: somebody is making decisions with.
+    context: ContextUse | None = None
+
+
+class ContextUse(BaseModel):
+    """How full the context is. Said in tokens, not in currency.
+
+    There is no cost here on purpose. Tokens per dollar change with a model's
+    price, a provider's markup and a cache policy, and a number that is out of
+    date is worse than no number: somebody reads it as a bill. What is exact is
+    the token count and the point the conversation will be summarised, and
+    those are the two that tell you whether to keep going or `/compact`.
+    """
+
+    tokens: int = 0
+    #: The point this session summarises the conversation at. `0` for a
+    #: session that will not, and then the bar has nothing to fill towards.
+    limit: int = 0
+    #: The model's own window, when it is one this project recognises.
+    window: int | None = None
+    #: Cumulative for the session, from the provider's own accounting.
+    total_in: int = 0
+    total_out: int = 0
+    #: Whether `tokens` came from the provider or from the estimate.
+    exact: bool = False
 
 
 class AgentError(_Event):

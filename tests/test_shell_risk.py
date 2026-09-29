@@ -123,6 +123,113 @@ def test_powershell_cmdlets_are_case_insensitive_but_posix_names_are_not():
     assert classify('ls')[0].value == 'read'
 
 
+# --- Money ------------------------------------------------------------------
+#
+# `trusted` mode allows network traffic without asking. A `curl` that charges a
+# card is network traffic, so without this the cheapest way for the agent to
+# spend was also the one tool it was told to prefer. Every case below is a
+# regression guard on that.
+
+PURCHASES = [
+    # Payment APIs, called the way each one is actually called.
+    'curl -X POST https://api.stripe.com/v1/charges -d amount=5000',
+    'curl -XPOST https://api.stripe.com/v1/charges -d amount=5000',
+    'curl -d amount=100 https://api.stripe.com/v1/charges',
+    'curl https://checkout.stripe.com/pay/abc123',
+    'curl -X POST https://api.twilio.com/2010-04-01/Messages.json -d Price=5',
+    'stripe charges create -a 500 -c usd',
+    # Cloud and hosting spend: the purchases nobody thinks of as purchases.
+    'gcloud compute instances create box',
+    'aws ec2 run-instances --image-id ami-1',
+    'az vm create --name box',
+    'gcloud compute instances delete box',
+    'fly deploy',
+    'vercel deploy --prod',
+    'terraform apply',
+    'aws s3 cp big.iso s3://b/',
+]
+
+# The lookalikes. Each of these is a purchase-shaped command that spends
+# nothing, and grading any of them `purchase` would fire an approval prompt at
+# an agent that is only reading documentation or listing resources — which is
+# how prompts get clicked through without being read.
+NOT_PURCHASES = [
+    'npm install stripe',
+    'pip install stripe',
+    'curl https://docs.stripe.com/api',
+    'curl -s https://stripe.com/docs | head -20',
+    'curl https://stripe.com/docs/checkout',
+    'wget -q -O page https://docs.stripe.com/api',
+    'curl --head https://stripe.com',
+    'curl https://api.github.com/repos/x/y',
+    'curl -X POST https://myapp.com/api/submit',
+    'gcloud compute instances list',
+    'gcloud compute instances list --project=x',
+    'gcloud billing accounts list',
+    'aws ec2 describe-instances',
+    'aws ec2 describe-instance-status',
+    'aws sts get-caller-identity',
+    'terraform plan',
+    'terraform plan -out=tf.plan',
+    'aws s3 ls',
+    'stripe --version',
+    'stripe listen --forward-to localhost:4242',
+    'fly status',
+    'az account show',
+    'npm publish',
+]
+
+
+@pytest.mark.parametrize('cmd', PURCHASES)
+def test_purchases(cmd):
+    assert classify(cmd)[0].value == 'purchase', classify(cmd)
+
+
+@pytest.mark.parametrize('cmd', NOT_PURCHASES)
+def test_lookalikes_are_not_purchases(cmd):
+    assert classify(cmd)[0].value != 'purchase', classify(cmd)
+
+
+@pytest.mark.parametrize('cmd', [
+    # A read verb and a write verb in one command. The write is the one that
+    # costs, and it is not always the one at the end of the line.
+    'terraform plan apply',
+    'aws s3 ls --delete',
+    'gcloud compute instances list --delete',
+    'aws ec2 describe-instances --delete',
+    'terraform apply -auto-approve',
+])
+def test_a_write_verb_beats_a_read_verb_in_the_same_command(cmd):
+    assert classify(cmd)[0].value == 'purchase', classify(cmd)
+
+
+def test_a_purchase_is_not_downgraded_by_an_unknown_flag():
+    """Flags come in pairs — `--d` is a bundle, `--data` takes a value — so a
+    matcher that required the flag to end at a token boundary would miss
+    `--data-raw` and read the purchase as a read."""
+    assert classify('curl --data-raw amount=5 https://api.stripe.com/v1/charges')[0].value == 'purchase'
+
+
+def test_a_write_flag_turns_a_payment_host_into_a_purchase():
+    """The hostname list alone is not enough. `stripe.com` is a payment
+    provider *and* the publisher of the documentation the agent needs to
+    integrate it; what separates them is the write."""
+    assert classify('curl https://docs.stripe.com/api')[0].value != 'purchase'
+    assert classify('curl https://api.stripe.com/v1/charges')[0].value != 'purchase'
+    assert classify('curl -d amount=5 https://api.stripe.com/v1/charges')[0].value == 'purchase'
+
+
+def test_the_reason_is_specific_enough_to_act_on():
+    """The reason reaches the person being asked to approve. "This spends
+    money" with nothing to distinguish three charges is a prompt that gets
+    approved on reflex."""
+    from openmirror.agent.tools.shell import _spends_money
+
+    assert _spends_money('gcloud compute instances create box') == '`gcloud` bills for what it creates'
+    assert _spends_money('curl https://checkout.stripe.com/pay/abc123') == 'a payment link'
+    assert _spends_money('ls -la') is None
+
+
 def test_executable_suffixes_are_stripped():
     assert classify('curl.exe https://example.com')[0].value == 'network'
     assert classify('where.exe python')[0].value == 'read'
