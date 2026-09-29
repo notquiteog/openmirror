@@ -214,6 +214,59 @@ async def list_checkpoints(session_id: str) -> dict[str, object]:
     return {'enabled': True, 'checkpoints': session.checkpoints.describe()}
 
 
+@http.get('/{session_id}/review')
+async def list_changes(session_id: str, checkpoint: str = '') -> dict[str, object]:
+    """What the last turn changed, as hunks somebody can take or drop.
+
+    Reads the before-content out of the snapshots rewind already keeps, so
+    this is a read and adds no storage of its own.
+    """
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    if session.checkpoints is None:
+        return {'enabled': False, 'files': []}
+    changes = session.checkpoints.changes(checkpoint or None)
+    return {
+        'enabled': True,
+        **session.checkpoints.reviewable(),
+        'files': [c.public() for c in changes],
+    }
+
+
+class Review(BaseModel):
+    path: str
+    # Which hunks to *keep*. Named for what it is rather than what to do with
+    # it, so an empty list means "keep none" and not "no instruction" — the
+    # difference between dropping everything and silently doing nothing.
+    keep: list[int] = []
+    force: bool = False
+
+
+@http.post('/{session_id}/review')
+async def apply_review(session_id: str, body: Review) -> dict[str, object]:
+    """Write one file back with only the hunks named.
+
+    A write, so it is refused while a turn is running: a review that lands
+    halfway through an edit the agent is still making reconstructs a file
+    against a version the turn has moved on from.
+    """
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    if session.checkpoints is None:
+        raise HTTPException(status_code=400, detail='this session keeps no undo history')
+    if session.busy:
+        raise HTTPException(status_code=409, detail='something is running; wait for the turn to finish')
+    try:
+        got = session.checkpoints.apply_review(body.path, set(body.keep), force=body.force)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not got.get('ok'):
+        raise HTTPException(status_code=409, detail=str(got.get('detail') or got.get('reason')))
+    return got
+
+
 class Restore(BaseModel):
     checkpoint: str
 
@@ -323,9 +376,19 @@ async def agent_socket(
 
             if kind == 'turn.submit':
                 try:
-                    agent.submit(command.get('text', ''), command.get('attachments') or [])
+                    turn_id = agent.submit(command.get('text', ''), command.get('attachments') or [])
                 except RuntimeError as exc:
                     await ws.send_json({'type': 'error', 'message': str(exc), 'retryable': False})
+                else:
+                    # An empty id means it was held rather than started, and
+                    # the client has to know: the text is already echoed, and
+                    # a message that looks sent and is not is the failure
+                    # mode this whole feature exists to remove.
+                    if not turn_id:
+                        await ws.send_json({
+                            'type': 'turn.queued',
+                            'waiting': len(agent.queued),
+                        })
             elif kind == 'tool.approve':
                 agent.approve(command.get('call_id', ''), bool(command.get('remember')))
             elif kind == 'tool.deny':

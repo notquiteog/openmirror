@@ -350,6 +350,10 @@ class AgentSession:
         # provider changes a price, and somebody reads it as a bill.
         self._total_in = 0
         self._total_out = 0
+        #: Messages typed while a turn was running, oldest first. Drained one
+        #: per turn, never all at once: three queued messages are three turns,
+        #: and running them in a burst would be a session nobody could follow.
+        self.queued: list[tuple[str, list[dict[str, Any]]]] = []
         # Set once a turn has been compacted, so a turn that is large on its
         # own does not summarise the summary on every step.
         self._fresh_summary = False
@@ -375,6 +379,11 @@ class AgentSession:
         if self._closed:
             return
         self._closed = True
+        # Messages typed while the last turn was running go with it. A closed
+        # session has no loop to start them in, and a queue that outlives the
+        # thing it was queued against is a list of work that is never done and
+        # never said to be undone.
+        self.queued.clear()
         self.interrupt()
 
         if self.tasks is not None:
@@ -516,12 +525,61 @@ class AgentSession:
     # -- client commands ----------------------------------------------------
 
     def submit(self, text: str, attachments: list[dict[str, Any]] | None = None) -> str:
-        """Start a turn. Returns its id immediately; the work happens in a task."""
+        """Start a turn, or hold the message until the running one finishes.
+
+        Both Claude Code and openCode queue a message sent during a turn, and
+        both are right to: the moment a person has something to add is
+        usually *while* the agent is working on the first half of it, and an
+        error saying "interrupt it first" throws away the thing they just
+        typed and makes them watch for a gap to type in.
+
+        So a message sent while busy is held, and starts the next turn as soon
+        as this one ends. `interrupt` still cancels everything, including
+        what is waiting — cancelling is cancelling, and a queue that
+        outranks it is a queue that will run work somebody threw away.
+        """
         if self._closed:
             raise RuntimeError('session is closed')
         if self._turn and not self._turn.done():
-            raise RuntimeError('a turn is already running — interrupt it first')
+            self.queued.append((text, attachments or []))
+            log.info('session %s: held a message until the turn finishes (%d waiting)', self.id, len(self.queued))
+            return ''
 
+        return self._start_turn(text, attachments)
+
+    def _drain_queue(self) -> None:
+        """Start the next held message, if there is one.
+
+        One per turn and scheduled rather than run inline, so the turn that
+        just finished has fully released the loop before the next one takes
+        it. A queue that ran inline would make every queued message part of
+        the previous turn's task, and a failure in one would take the rest
+        with it.
+        """
+        # No "is a turn running" check here: this is called from inside the
+        # turn that has just finished, so `self._turn` is that turn and is by
+        # definition still running. The check that means something is in
+        # `_submit_queued`, which the event loop calls after the task is done.
+        if self._closed or not self.queued:
+            return
+        text, attachments = self.queued.pop(0)
+        log.info('session %s: starting a held message (%d still waiting)', self.id, len(self.queued))
+        asyncio.get_running_loop().call_soon(self._submit_queued, text, attachments)
+
+    def _submit_queued(self, text: str, attachments: list[dict[str, Any]]) -> None:
+        """Start it, turning a refusal into a drop rather than a crash.
+
+        A queued message has already been accepted by the person, so
+        failing to start it silently is the one outcome that is not allowed;
+        but a task raising into nobody is worse. It is reported, and the rest
+        of the queue still runs.
+        """
+        try:
+            self._start_turn(text, attachments)
+        except Exception as exc:  # noqa: BLE001 - a boundary, and a queued turn is not a request
+            log.exception('a held message could not start: %s', exc)
+
+    def _start_turn(self, text: str, attachments: list[dict[str, Any]] | None = None) -> str:
         turn_id = uuid.uuid4().hex[:16]
         name, arguments = _slash(text)
 
@@ -667,6 +725,11 @@ class AgentSession:
             await self._emit(
                 TurnCompleted(session_id=self.id, turn_id=turn_id, stop_reason='interrupted', usage=usage_total)
             )
+            # An interrupt drops the queue with the turn. Someone who throws
+            # away a build does not want the follow-up they typed two minutes
+            # ago, and a queue that outranks cancel is a queue that will run
+            # work somebody discarded.
+            self.queued.clear()
             raise
 
         except Exception as exc:  # noqa: BLE001 - the turn boundary is where errors become events
@@ -696,6 +759,7 @@ class AgentSession:
                 context=self.context_report(),
             )
         )
+        self._drain_queue()
 
     async def _loop(self, turn_id: str, usage: dict[str, int]) -> str:
         """Ask, run, answer, until the model stops asking. Returns why it stopped.
