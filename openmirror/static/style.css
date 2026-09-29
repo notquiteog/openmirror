@@ -1678,6 +1678,45 @@ button.ghost.danger:hover { border-color: var(--danger); }
 .ctx-bar > span.warn { background: var(--warn, #c9a227); }
 .ctx-bar > span.full { background: var(--danger, #d05a4e); }
 
+/* --- hooks ---------------------------------------------------------------- */
+
+/* The consent strip. Above the transcript and below the header, so it is
+   visible during a turn and covers none of it. */
+.hooks-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 18px 8px; padding: 8px 12px;
+  border: 1px solid var(--warn, #c9a227); border-radius: 10px;
+  background: var(--glass-strong); font-size: 12.5px;
+}
+.hooks-banner .hook-ask { color: var(--ink); }
+.hooks-banner .hook-command {
+  font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  background: var(--edge-soft); padding: 2px 7px; border-radius: 5px;
+  max-width: 100%; overflow-x: auto; white-space: pre;
+}
+
+.hooks-body { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.hook-row { border: 1px solid var(--edge-soft); border-radius: 9px; padding: 9px 11px; }
+.hook-row.project { border-left: 3px solid var(--warn, #c9a227); }
+.hook-row.trusted { border-left: 3px solid var(--ok); }
+.hook-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.hook-event {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint);
+}
+.hook-name { flex: 1; min-width: 0; font-size: 12.5px; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hook-tag {
+  font-size: 10px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--edge-soft); color: var(--faint);
+}
+.hook-tag.warn { border-color: var(--warn, #c9a227); color: var(--warn, #c9a227); }
+.hook-command {
+  display: block; font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  background: var(--edge-soft); padding: 5px 8px; border-radius: 6px;
+  overflow-x: auto; white-space: pre; margin-bottom: 4px;
+}
+.hook-row p { margin: 2px 0 0; }
+
 /* --- hunk review ------------------------------------------------------------- */
 
 /* A hunk kept is a quiet row; one put back is the loud one. The colour is on

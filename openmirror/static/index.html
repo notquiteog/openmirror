@@ -102,6 +102,9 @@
       <span>Providers</span><span class="chev">›</span>
     </button>
     <div id="providers" aria-label="Providers" hidden></div>
+    <button class="nav-row" id="hooks-open">
+      <svg class="ic"><use href="#i-list"></use></svg><span>Hooks</span>
+    </button>
     <button class="nav-row" id="open-settings">
       <svg class="ic"><use href="#i-gear"></use></svg><span>Settings</span>
     </button>
@@ -135,6 +138,11 @@
     </button>
     <span id="link" class="pill off">offline</span>
   </header>
+
+  <!-- A hook from this project wants to run. A strip, not a dialog: it must
+       not cover the turn that is running, and a question nobody is asked is a
+       policy nobody agreed to. -->
+  <div id="hooks-banner" class="hooks-banner" hidden aria-live="polite"></div>
 
   <div id="transcript" role="log" aria-live="polite">
     <!-- What an empty session looks like: the companion, a question, and the
@@ -485,6 +493,27 @@
     </div>
   </section>
 </main>
+
+<dialog id="hooks-dialog">
+  <form method="dialog">
+    <h2>Hooks</h2>
+    <p class="explain">
+      Commands that run around a tool call. One that exits non-zero stops the call and its reason goes
+      back to the model — a hook can take things away and can never allow them, so a project can stop
+      you doing something without being able to do it for you.
+    </p>
+    <p class="explain">
+      Yours in <code>~/.openmirror/hooks.json</code> run as written. A project's are code you did not
+      write, so the first time one would fire you are asked, and the answer lasts for the session.
+    </p>
+    <div id="hooks-body" class="hooks-body"></div>
+    <menu>
+      <div class="spacer"></div>
+      <button type="submit" value="close" class="ghost" id="hooks-close">Close</button>
+    </menu>
+    <p id="hooks-foot" class="meta"></p>
+  </form>
+</dialog>
 
 <dialog id="review-dialog">
   <form method="dialog">

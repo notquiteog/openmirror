@@ -28,6 +28,7 @@ import { cancel as cancelStream, flush as flushStream, queue } from './stream.js
 import { openStudio, stopPolling, wireStudio } from './studio.js';
 import { startTalking, stopTalking, talking, wireTalk } from './talk.js';
 import { renderContext, refreshContext, wireContext } from './context.js';
+import { onHookApproval, resetHooks, wireHooks } from './hooks.js';
 import { refreshReview, resetReview, wireReview } from './review.js';
 import { renderUpdate, watchUpdates, wireUpdates } from './updates.js';
 import { Voice } from './voice.js';
@@ -1222,6 +1223,14 @@ function handleAgentEvent(ev) {
       companion.set('waiting');
       break;
 
+    case 'hook.approval': {
+      /* A project wants to run something. Asked once, per command, and the
+         call carries on without it until somebody answers — a refusal is a
+         decision a person makes, not one the session makes by stalling. */
+      onHookApproval(ev.hook);
+      break;
+    }
+
     case 'turn.queued': {
       /* The text is already echoed into the transcript, so saying nothing
          here would show a message sitting in the composer that is neither
@@ -1983,6 +1992,7 @@ function selectSession(id) {
   // from the one just left is worse than offering none.
   resetFiles();
   resetReview();
+  resetHooks();
   loadCommands(id);
   rememberSession(id);
   // A reattached session has the transcript but never saw the turn that
@@ -2281,6 +2291,7 @@ wireMail();
 wireCommit();
 wireContext();
 wireReview({ sessionId });
+wireHooks({ sessionId });
 wireFiles({ sessionId, request: (path) => json(path) });
 // Once, at load, and not polled: all this does is put a dot on the Updates tab
 // so somebody finds out there is a new release without having gone looking.

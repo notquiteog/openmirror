@@ -195,6 +195,22 @@ class Config:
     # moment you want it is always after the fact.
     checkpoints_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_CHECKPOINTS', True))
 
+    # --- hooks ---------------------------------------------------------------
+    # Commands that run around a tool call and can refuse it. A hook can only
+    # take things away — never widen the policy — which is what makes it safe
+    # for a project to ship them. See openmirror/agent/hooks.py.
+    hooks_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_HOOKS', True))
+    # Whether a *project's* hooks may run without asking. Off by default: a
+    # repository that ships a hooks file is running code you did not write,
+    # and the first time it would fire the interface says what it would run.
+    # Somebody's own hooks, in ~/.openmirror/hooks.json, are theirs and run
+    # without a question.
+    hooks_allow_untrusted: bool = field(default_factory=lambda: _bool('OPENMIRROR_HOOKS_ALLOW_PROJECT'))
+    # Wall clock for one hook. A hook that misses it is reported and treated as
+    # having said nothing — "your formatter was slow" and "you may not do this"
+    # are different sentences, and a timeout must not say the second one.
+    hooks_timeout: int = field(default_factory=lambda: _int('OPENMIRROR_HOOKS_TIMEOUT', 10))
+
     # --- agents, skills and the code ---------------------------------------
     # Subagents: the `agent` tool, in the foreground and the background. On,
     # because every call a subagent makes is graded and asked about exactly

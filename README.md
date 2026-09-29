@@ -201,7 +201,9 @@ it can be deleted, and all of it can be. See [docs/MEMORY.md](docs/MEMORY.md).
 The modes are described in [docs/MODES.md](docs/MODES.md) and the providers,
 routing and Tor in [docs/PROVIDERS.md](docs/PROVIDERS.md). Mail has its own
 page — [docs/MAIL.md](docs/MAIL.md) — because why IMAP rather than a vendor
-API, and what `threadId` is worth, do not fit in a paragraph.
+API, and what `threadId` is worth, do not fit in a paragraph. Hooks have
+[docs/HOOKS.md](docs/HOOKS.md), where the property that makes running a
+project's code defensible is written out in full.
 
 **The web, and a real browser.** `web_search` and `web_fetch` for reading,
 `research` for answering — several searches and the pages behind them in one
@@ -421,6 +423,25 @@ model that will refuse the request is worse than no bar. It fills towards the
 point the conversation gets *summarised*, which is the number that decides
 whether to keep going. There is no cost in dollars: a price is out of date the
 moment a provider changes one, and somebody reads a stale number as a bill.
+
+**Hooks — your own commands around a tool call.** Settings has a Hooks
+panel. A hook is a command that gets the call as JSON on stdin and can refuse
+it, which is the extension point every serious harness has and the one thing
+that is actually yours.
+
+The design is one asymmetry: `exit != 0` refuses, and **nothing at all can
+turn a refusal into an approval**. A repository's hooks may stop you doing
+things; they cannot do things on your behalf. That is what makes it defensible
+for a project to ship a `hooks.json` — a project's are code you did not write,
+so the first time one would fire, a strip above the transcript shows the exact
+command and asks, and the answer lasts for the session, per command.
+
+```json
+{"PreToolUse": [
+  {"name": "no secrets", "command": "grep -qiE 'password|api_key' - && exit 1",
+   "tools": ["write_file"]}
+]}
+```
 
 **Review a turn one hunk at a time.** "Review changes" sits beside Rewind,
 because they are different decisions: rewind throws a whole turn away, review

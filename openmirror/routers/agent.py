@@ -267,6 +267,58 @@ async def apply_review(session_id: str, body: Review) -> dict[str, object]:
     return got
 
 
+@http.get('/{session_id}/hooks')
+async def list_hooks(session_id: str) -> dict[str, object]:
+    """What this project and this person have configured, and which of it has
+    been agreed to.
+
+    Shown whether or not anything is confirmed, because "this project has
+    hooks" is information and "this project ran something" is not.
+    """
+    from openmirror.agent.hooks import command_of
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    from openmirror.config import config
+
+    return {
+        'enabled': config.hooks_enabled,
+        'allow_project': config.hooks_allow_untrusted,
+        'timeout': config.hooks_timeout,
+        'hooks': [
+            {**h.public(), 'command_readable': command_of(h), 'agreed': h.command in session.hooks_agreed}
+            for h in session.hooks
+        ],
+    }
+
+
+class HookDecision(BaseModel):
+    command: str
+    allow: bool = True
+
+
+@http.post('/{session_id}/hooks/agree')
+async def agree_hook(session_id: str, body: HookDecision) -> dict[str, object]:
+    """Agree to one hook, or refuse it, for this session.
+
+    Matched on the *command* rather than on the file, so a project cannot get
+    a new hook added and quietly inherit the answer somebody gave for a
+    different one.
+    """
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    if body.allow:
+        session.hooks_agreed.add(body.command)
+    else:
+        # Refusing has to be remembered too, or the question comes back on
+        # every tool call and becomes something to click through.
+        session.hooks_agreed.discard(body.command)
+        session.hooks_refused.add(body.command)
+    return {'ok': True, 'agreed': sorted(session.hooks_agreed)}
+
+
 class Restore(BaseModel):
     checkpoint: str
 

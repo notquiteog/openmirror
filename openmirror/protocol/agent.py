@@ -260,6 +260,21 @@ class ContextUse(BaseModel):
     exact: bool = False
 
 
+class HookApproval(_Event):
+    """A hook from this project wants to run, and has not been agreed to.
+
+    Sent the first time an event would have used it, and the call carries on
+    *without* the hook — a refusal is a decision somebody makes, not one the
+    session makes by timing out. The interface shows the command and asks; the
+    answer is remembered for the session, per command, so a project cannot get
+    a new hook added and quietly inherit an old one's agreement.
+    """
+
+    type: Literal['hook.approval'] = 'hook.approval'
+    turn_id: str
+    hook: dict[str, Any]
+
+
 class AgentError(_Event):
     type: Literal['error'] = 'error'
     turn_id: str | None = None

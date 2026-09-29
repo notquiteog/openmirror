@@ -50,6 +50,7 @@ from openmirror.agent.tools.base import FILE_WRITERS, Assessment, Output, Tool, 
 from openmirror.protocol.agent import (
     AgentError,
     ContextCompacted,
+    HookApproval,
     PolicyChanged,
     QuestionAsked,
     Risk,
@@ -234,6 +235,7 @@ class AgentSession:
         compact_at: int = 0,
         after_write: list[Any] | None = None,
         project_context: str = '',
+        hooks: list[Any] | None = None,
         parent: AgentSession | None = None,
         agent_id: str = '',
     ) -> None:
@@ -275,6 +277,9 @@ class AgentSession:
         # The project's own instructions, kept so a subagent can be given them
         # too: it works in the same project, under the same conventions.
         self.project_context = project_context
+        self.hooks: list[Any] = list(hooks or [])
+        self.hooks_agreed: set[str] = set()
+        self.hooks_refused: set[str] = set()
         # When to summarise the conversation to make room, in estimated tokens.
         # 0 is never, which is what a subagent gets: it lives for one task.
         self.compact_at = compact_at
@@ -978,6 +983,32 @@ class AgentSession:
         call.risk = assessment.risk
         call.summary = assessment.summary
 
+        # Hooks run *before* the approval policy, and can only take things
+        # away. That order is the whole safety argument: a hook is code from
+        # a project, and a project may stop you doing things without being
+        # able to do them for you. A refusal from the policy below is final
+        # whatever a hook said, so there is no path from a repository to an
+        # approval.
+        #
+        # Before rather than after, so a person is not asked about a call
+        # that a hook was always going to refuse — which trains them to click
+        # yes without reading, and that is the habit this project works
+        # against everywhere else.
+        outcome = await self._hooks_run('PreToolUse', call, turn_id=turn_id)
+        if outcome.blocked:
+            call.status = ToolStatus.DENIED
+            reason = f'a hook stopped this: {outcome.blocked}'
+            await self._emit(ToolProposed(session_id=self.id, turn_id=turn_id, call=call, needs_approval=False))
+            await self._emit(ToolDenied(session_id=self.id, turn_id=turn_id, call_id=call.id, reason=reason))
+            return ToolResultBlock(
+                tool_use_id=call.id,
+                # Said as a fact and not as a refusal of the tool: the model
+                # is being told something about the world, and a tool result
+                # that reads as "you may not" gets argued with.
+                content=f'A hook on this project stopped this call before it ran. Its reason:\n{outcome.blocked}',
+                is_error=True,
+            )
+
         stuck, why_stuck = self._note_repeat(call)
         if stuck is not None:
             # Announced as a proposal that was then refused, rather than
@@ -1023,6 +1054,41 @@ class AgentSession:
 
         return await self._execute(turn_id, tool, call, ctx)
 
+    async def _hooks_run(self, event: str, call: ToolCall, *, turn_id: str) -> Any:
+        """The confirmed hooks for an event, run against a call.
+
+        An unconfirmed one is skipped rather than run. That is the whole
+        consent story: a project's hooks are somebody else's code, and until
+        a person has been shown the command and agreed to it, it does not
+        run. Skipping quietly would be worse than asking, so the interface
+        is told what is waiting — see `HookApproval`, which is emitted for
+        the first unconfirmed hook an event would have used.
+        """
+        from openmirror.agent.hooks import HookOutcome
+        from openmirror.agent.hooks import run as run_hooks
+
+        if not self.hooks:
+            return HookOutcome()
+
+        waiting = [
+            h for h in self.hooks
+            if h.event == event and h.command not in self.hooks_agreed and h.command not in self.hooks_refused
+        ]
+        if waiting:
+            for hook in waiting:
+                if hook.matches(tool=call.name, summary=call.summary):
+                    await self._emit(HookApproval(session_id=self.id, turn_id=turn_id, hook=hook.public()))
+                    break
+
+        ready = [h for h in self.hooks if h.command in self.hooks_agreed]
+        if not ready:
+            return HookOutcome()
+        try:
+            return await run_hooks(ready, event, call, cwd=self.root, session_id=self.id)
+        except Exception as exc:  # noqa: BLE001 - a broken hook must not end a turn
+            log.exception('a hook failed: %s', exc)
+            return HookOutcome(problems=[f'a hook failed: {exc}'])
+
     async def _execute(self, turn_id: str, tool: Tool, call: ToolCall, ctx: ToolContext) -> ToolResultBlock:
         call.status = ToolStatus.RUNNING
         await self._emit(ToolStarted(session_id=self.id, turn_id=turn_id, call_id=call.id))
@@ -1042,6 +1108,18 @@ class AgentSession:
         except Exception as exc:  # noqa: BLE001
             log.exception('tool %s failed', call.name)
             ok, content, display, truncated = False, f'{type(exc).__name__}: {exc}', None, False
+
+        # `PostToolUse` is advisory and runs whether the tool worked or not,
+        # because a linter complaining about a failed edit is the case worth
+        # hearing about. It cannot un-do the call: the tool has already run,
+        # and reporting work that happened as work that did not would be a
+        # worse lie than the extra noise.
+        if self.hooks:
+            after = await self._hooks_run('PostToolUse', call, turn_id=turn_id)
+            if after.notes and ok:
+                content = f'{content}\n\nA hook said:\n{after.notes}'
+            for problem in after.problems:
+                log.info('session %s: %s', self.id, problem)
 
         if ok and self.after_write and call.risk in (Risk.WRITE, Risk.DESTRUCTIVE) and display and display.get('path'):
             for hook in self.after_write:

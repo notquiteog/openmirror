@@ -7,6 +7,7 @@ everything from, fails in ways that look like the model being stupid.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ from openmirror.agent.tools.search import GlobTool, GrepTool
 from openmirror.agent.tools.shell import ShellTool
 from openmirror.agent.tools.tasks import TasksTool
 from openmirror.agent.tools.todo import TodoTool
+
+log = logging.getLogger(__name__)
 
 # What each named toolset contains. Groups rather than individual names,
 # because the choice a person actually makes is "this session is for browsing"
@@ -247,6 +250,11 @@ def build_session(
     # what a test wants, since a test that passed because of whatever happens
     # to be in someone's home directory has tested their home directory.
     home: Path | None = None,
+    # Hooks for this project and this person. `None` looks for them, which is
+    # the ordinary case; `[]` means there are none, which is what a test wants,
+    # because a test that passed because of whatever is in somebody's home
+    # directory has tested their home directory.
+    hooks: list[Any] | None = None,
 ) -> AgentSession:
     root_path = Path(root).expanduser().resolve()
     if not root_path.is_dir():
@@ -302,6 +310,17 @@ def build_session(
         chosen = [*chosen, *system_tools()]
     if mcp is not None:
         chosen = [*chosen, *mcp_tools(mcp)]
+
+    if hooks is None:
+        hooks = []
+        try:
+            from openmirror.agent import hooks as hooks_mod
+            from openmirror.config import config as _cfg
+
+            if _cfg.hooks_enabled:
+                hooks = hooks_mod.find(root_path, home=home or Path.home())
+        except Exception:  # noqa: BLE001 - hooks are an extension, never a requirement
+            log.exception('hooks could not be loaded; continuing without them')
 
     found_skills: dict[str, Any] = {}
     if skills:
@@ -401,4 +420,5 @@ def build_session(
         compact_at=compact_at,
         after_write=after_write,
         project_context=project,
+        hooks=list(hooks),
     )
