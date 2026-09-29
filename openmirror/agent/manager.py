@@ -39,6 +39,60 @@ class SessionManager:
         self._sessions: dict[str, AgentSession] = {}
         self._reaper: asyncio.Task[None] | None = None
 
+    def store(self) -> Any:
+        """The transcript store, or None when there is nowhere to write one."""
+        from openmirror.agent.runtime import _default_store
+
+        return _default_store()
+
+    def stored(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Every conversation on disk, newest first.
+
+        Separate from `list()` on purpose: `list()` is what the sidebar
+        shows, and it is the *live* sessions. These are the ones that survive a
+        restart, which after a restart is all of them and before one is most of
+        them not being there yet.
+        """
+        store = self.store()
+        return store.list(limit=limit) if store is not None else []
+
+    async def resume(self, session_id: str, **kwargs: Any) -> AgentSession | None:
+        """Reopen a stored conversation as a live session.
+
+        Rebuilt rather than rehydrated: the tools, the provider and the policy
+        are built as they would have been for the first time, and the stored
+        messages are put back into the result. A transcript is a record, and
+        the point of reopening one is the conversation, not the process that
+        produced it.
+
+        The root, model and toolset come from the transcript rather than from
+        the caller, because a conversation about a different project reopened
+        in this one is a conversation that will confidently edit the wrong
+        files.
+        """
+        store = self.store()
+        if store is None:
+            return None
+        try:
+            stored = store.load(session_id)
+        except Exception:  # noqa: BLE001
+            log.exception('session %s could not be reopened', session_id)
+            return None
+        if stored is None:
+            return None
+        from openmirror.config import config as _cfg
+
+        return await self.create(
+            root=stored.root or kwargs.pop('root', _cfg.workspace),
+            provider=kwargs['provider'],
+            model=stored.model or kwargs.get('model', ''),
+            mode=kwargs.get('mode', Mode.ASK),
+            session_id=stored.id,
+            title=stored.title,
+            toolset=list(stored.toolset) or kwargs.get('toolset'),
+            **kwargs,
+        )
+
     async def create(
         self,
         *,
@@ -56,8 +110,14 @@ class SessionManager:
         cfg: Any = None,
     ) -> AgentSession:
         from openmirror.config import config as default_config
+        from openmirror.settings import for_root
 
-        cfg = cfg or default_config
+        # This project's settings, on a *copy*. A project file belongs to a
+        # project, and the daemon serves many at once — applying one to the
+        # shared config would let a repository change what happens in
+        # somebody else's session, which is the hole the narrowing rules exist
+        # to close one level below.
+        cfg = for_root(root, cfg or default_config)
 
         # The stage comes first, because the browser wants to be launched onto
         # it. Built eagerly rather than lazily: it is an X server, starting one
@@ -123,6 +183,7 @@ class SessionManager:
             root=root, provider=provider, model=model, mode=mode, effort=effort, session_id=session_id,
             title=title or Path(root).name, memory=memory, user_id=user_id,
             confined=not cfg.unconfined,
+            extra_dirs=list(getattr(cfg, "extra_dirs", []) or []),
             allow_purchases=cfg.allow_purchases,
             allow_credentials=cfg.allow_credentials,
             allow_messages=cfg.allow_messages,

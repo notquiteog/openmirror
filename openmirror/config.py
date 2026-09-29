@@ -90,6 +90,15 @@ class Config:
     # root, and the shell cannot be confined at all — so with this off, the
     # shell at least escalates any command reaching outside it.
     unconfined: bool = field(default_factory=lambda: _bool('OPENMIRROR_UNCONFINED'))
+    # Directories a confined session may also reach, as a list. The middle
+    # ground between "this project only" and "the whole disk": a person who
+    # needs to read a shared library next door has one of these, and nobody
+    # who needs it wants `unconfined`, which is a flag that opens everything.
+    extra_dirs: list[str] = field(
+        default_factory=lambda: [
+            part.strip() for part in os.getenv('OPENMIRROR_EXTRA_DIRS', '').split(os.pathsep) if part.strip()
+        ]
+    )
 
     # Money and secrets are their own axis, deliberately separate from
     # `approval_mode`. Both are on: this is meant to be able to finish a task
@@ -463,3 +472,22 @@ class Config:
 
 
 config = Config()
+
+
+def apply_settings(root: str = '.'):
+    """This person's settings file, over the environment.
+
+    Called once at start-up. Only the *global* files — a person's, and
+    anything `OPENMIRROR_CONFIG` names — because a project's file belongs to a
+    project and is applied per session in `SessionManager.create`, where it
+    lands on a copy rather than on this.
+    """
+    from openmirror.settings import PROJECT_NAMES, load
+    from openmirror.settings import apply as _apply
+
+    found = load('.', environ=os.environ)
+    # A project's file is not applied here, and saying so beats applying the
+    # default workspace's project settings to every other session.
+    found.sources = [s for s in found.sources if not any(s.endswith(n) for n in PROJECT_NAMES)]
+    _apply(found, config)
+    return found

@@ -319,6 +319,68 @@ async def agree_hook(session_id: str, body: HookDecision) -> dict[str, object]:
     return {'ok': True, 'agreed': sorted(session.hooks_agreed)}
 
 
+@http.get('/settings')
+async def read_settings(root: str = '') -> dict[str, object]:
+    """Which settings files applied to a project, what they said, and what
+    they were not allowed to say.
+
+    The last of those is the one worth showing. A project asking to be less
+    safe than you already are should be visible rather than silent, because
+    silent is indistinguishable from not being read.
+    """
+    from openmirror.settings import load
+
+    return load(root or config.workspace).public()
+
+
+@http.get('/stored')
+async def list_stored(limit: int = 100) -> dict[str, object]:
+    """Every conversation on disk, newest first.
+
+    Separate from `GET /api/sessions`, which is the *live* ones. After a
+    restart the live list is empty and this is everything.
+    """
+    return {'sessions': manager.stored(limit=limit)}
+
+
+@http.post('/{session_id}/resume')
+async def resume_session(session_id: str) -> dict[str, object]:
+    """Reopen a stored conversation as a live session.
+
+    The root, model and toolset come from the transcript, not from the
+    request: a conversation about one project reopened in another is a
+    conversation that will confidently edit the wrong files.
+    """
+    from openmirror.config import config
+
+    try:
+        impl, model, _info = await _resolve_chat(None, None)
+    except NoProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session = await manager.resume(session_id, provider=impl, model=model, mode=config.approval_mode)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f'no stored conversation called {session_id!r}')
+    return {'session': {'id': session.id, 'title': session.title, 'root': str(session.root),
+                       'model': session.model, 'policy': session.policy.mode.value}}
+
+
+@http.get('/{session_id}/export')
+async def export_session(session_id: str) -> dict[str, object]:
+    """A conversation as Markdown, to paste somewhere else.
+
+    Tool calls are rendered as what they were rather than dropped. "The agent
+    ran a command and here is the conversation without it" is a document that
+    misleads.
+    """
+    from openmirror.sessions import to_markdown
+
+    store = manager.store()
+    stored = store.load(session_id) if store is not None else None
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f'no stored conversation called {session_id!r}')
+    return {'session': session_id, 'title': stored.title, 'markdown': to_markdown(stored)}
+
+
 class Restore(BaseModel):
     checkpoint: str
 

@@ -113,6 +113,20 @@ async def lifespan(app: FastAPI):
                 config.mcp_serve_scope, 'yes' if config.mcp_serve_token else 'no',
             )
 
+    # This person's settings file, over the environment. A *project's* file is
+    # applied per session, in `SessionManager.create`, on a copy — a project
+    # belongs to a project and the daemon serves many at once.
+    try:
+        from openmirror.config import apply_settings
+
+        found = apply_settings()
+        for path in found.sources:
+            log.info('settings: %s', path)
+        for source, key, why in found.refused:
+            log.warning('settings: %s asked for %s and was refused — %s', source, key, why)
+    except Exception:  # noqa: BLE001 - a bad settings file must not stop the daemon
+        log.exception('settings could not be read; continuing with the environment')
+
     log.info('workspace: %s   approval: %s', config.workspace, config.approval_mode)
     if not config.auth_token and not auth_router.is_loopback(config.host):
         # Refused rather than warned. This process runs commands on this

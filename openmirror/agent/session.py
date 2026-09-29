@@ -260,6 +260,9 @@ class AgentSession:
         after_write: list[Any] | None = None,
         project_context: str = '',
         hooks: list[Any] | None = None,
+        toolset: list[str] | None = None,
+        store: Any = None,
+        extra_dirs: list[str] | None = None,
         parent: AgentSession | None = None,
         agent_id: str = '',
     ) -> None:
@@ -302,6 +305,16 @@ class AgentSession:
         # too: it works in the same project, under the same conventions.
         self.project_context = project_context
         self.hooks: list[Any] = list(hooks or [])
+        #: Where this conversation is written down, if anywhere. Set by
+        #: `build_session`; a session with no store is a session that does
+        #: not survive a restart, which is the old behaviour and is opt-out.
+        self.store: Any = store
+        #: Directories this session may reach besides its root while confined.
+        self.extra_roots: list[str] = [str(d) for d in (extra_dirs or [])]
+        #: The groups this session was narrowed to, kept so a reopened one is
+        #: built the same way. A transcript that reopened with different tools
+        #: would be a conversation about a project that no longer exists.
+        self.toolset: list[str] = list(toolset or [])
         self.hooks_agreed: set[str] = set()
         self.hooks_refused: set[str] = set()
         # When to summarise the conversation to make room, in estimated tokens.
@@ -393,6 +406,7 @@ class AgentSession:
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
+        self._restore()
         await self._emit(
             SessionStarted(
                 session_id=self.id,
@@ -404,9 +418,59 @@ class AgentSession:
             )
         )
 
+    def _stored(self) -> Any:
+        """This session as plain data, or None when it cannot be written."""
+        from openmirror.sessions import Stored, encode_block
+
+        return Stored(
+            id=self.id, title=self.title, root=str(self.root), model=self.model,
+            toolset=list(self.toolset),
+            messages=[
+                {'role': message.role, 'content': [encode_block(b) for b in message.content]}
+                for message in self.messages
+            ],
+            unfinished=self.busy,
+        )
+
+    def _restore(self) -> None:
+        """Put a stored conversation back, if this session has one.
+
+        After `SessionStarted` has already been emitted to whoever is
+        attached — and before the first model call, which is the part that
+        matters, because a resumed session whose context is silently empty
+        starts the conversation over.
+        """
+        if self.store is None:
+            return
+        try:
+            stored = self.store.load(self.id)
+        except Exception:  # noqa: BLE001 - a bad transcript must not stop a session opening
+            log.exception('the stored conversation for %s could not be read', self.id)
+            return
+        if stored is None or not stored.messages:
+            return
+        self.messages = stored.restore()
+        if stored.unfinished:
+            # Said, because a transcript does not contain a Future and a
+            # session restored to just before a turn that has vanished should
+            # not look like a turn that finished.
+            self.messages.append(Message(role='assistant', content=[TextBlock(
+                text='[the daemon stopped while this turn was running; it is not in the transcript]'
+            )]))
+
+    async def _persist(self) -> None:
+        """Write the conversation down, if there is somewhere to put it."""
+        if self.store is None:
+            return
+        try:
+            self.store.save(self._stored())
+        except Exception:  # noqa: BLE001 - losing a transcript is bad, ending a turn is worse
+            log.exception('the conversation for %s could not be written', self.id)
+
     async def close(self, reason: str = 'closed') -> None:
         if self._closed:
             return
+        await self._persist()
         self._closed = True
         # Messages typed while the last turn was running go with it. A closed
         # session has no loop to start them in, and a queue that outlives the
@@ -828,6 +892,7 @@ class AgentSession:
                     )
                 )
 
+        await self._persist()
         self._drain_queue()
 
     async def _loop(self, turn_id: str, usage: dict[str, int]) -> str:
@@ -1611,6 +1676,7 @@ class AgentSession:
             emit=emit,
             ask=ask,
             session_id=self.id,
+            extra_roots=list(self.extra_roots),
             env=self.env,
             confined=self.confined,
             checkpoint=self.checkpoints,

@@ -58,6 +58,10 @@ class ToolContext:
     emit: Emit
     ask: Ask
     session_id: str
+    #: Directories this session may reach besides its root, when it is
+    #: confined. Set per session from `OPENMIRROR_EXTRA_DIRS`; see
+    #: `resolve_in_root`.
+    extra_roots: list[str] = field(default_factory=list)
     # False gives the agent the whole filesystem. It is a declared mode rather
     # than an accident, and the distinction matters: before this existed the
     # file tools were confined and the shell was not, which is the worst of
@@ -143,9 +147,22 @@ def resolve_in_root(candidate: str | Path, ctx: ToolContext) -> Path:
         return resolved
 
     root = ctx.root.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise PathEscape(f'{candidate}: outside the session root ({root})')
-    return resolved
+    if resolved == root or root in resolved.parents:
+        return resolved
+
+    # Anywhere else has to be *allowed*, and the allowlist is a list rather
+    # than a switch. `unconfined` is all or nothing: a person who needs one
+    # directory outside the project either turns the whole thing off or does
+    # without, and a flag that opens everything is not a thing anybody can
+    # leave on.
+    for extra in ctx.extra_roots or ():
+        allow = Path(extra).expanduser().resolve()
+        if resolved == allow or allow in resolved.parents:
+            return resolved
+    raise PathEscape(
+        f'{candidate}: outside the session root ({root})'
+        + (' and not in the allowed directories' if ctx.extra_roots else '')
+    )
 
 
 def escapes_root(candidate: str, ctx: ToolContext) -> bool:

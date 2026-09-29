@@ -137,6 +137,30 @@ def calendar_tools(cfg: Any) -> list[Tool]:
     return [CalendarTool(CalendarStore(Path(getattr(cfg, 'calendar_dir', ''))))]
 
 
+def _default_store() -> Any:
+    """The transcript store, under the data directory.
+
+    Built once per process and shared, because it is a directory of files and
+    there is nothing per-session about it. A failure to build one is not
+    fatal: a session that cannot be written down is a session that works.
+    """
+    global _STORE
+    if _STORE is _UNSET:
+        try:
+            from openmirror.config import config
+            from openmirror.sessions import SessionStore
+
+            _STORE = SessionStore(Path(config.data_dir) / 'sessions')
+        except Exception:  # noqa: BLE001
+            log.exception('no transcript store; conversations will not be saved')
+            _STORE = None
+    return _STORE
+
+
+_UNSET = object()
+_STORE: Any = _UNSET
+
+
 def mail_tools(cfg: Any) -> list[Tool]:
     """The `mail` tool, when this install has a mailbox to use it on.
 
@@ -273,6 +297,12 @@ def build_session(
     # because a test that passed because of whatever is in somebody's home
     # directory has tested their home directory.
     hooks: list[Any] | None = None,
+    # Where to write the conversation down. None means "use the default,
+    # under the data directory", and a caller that genuinely wants no
+    # transcript at all passes a store it has thrown away.
+    store: Any = None,
+    # Directories this session may reach besides its root while confined.
+    extra_dirs: list[str] | None = None,
 ) -> AgentSession:
     root_path = Path(root).expanduser().resolve()
     if not root_path.is_dir():
@@ -442,4 +472,7 @@ def build_session(
         after_write=after_write,
         project_context=project,
         hooks=list(hooks),
+        toolset=[t for t in (toolset or []) if t],
+        store=store if store is not None else _default_store(),
+        extra_dirs=[str(d) for d in (extra_dirs or [])],
     )
