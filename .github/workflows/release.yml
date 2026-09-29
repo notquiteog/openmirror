@@ -113,7 +113,23 @@ jobs:
       - name: The daemon, with the extras a desktop wants
         run: |
           python -m pip install --upgrade pip
-          python -m pip install '.[desktop,tor,vec]' "pyinstaller==$PYINSTALLER_VERSION"
+          # `vec` is the memory store's C scan, and it is left out of the macOS
+          # build on purpose. It ships one prebuilt `vec0.dylib` per platform
+          # and that one is built for macOS 14, with no older build published
+          # for `repin` to fetch — so including it means the frozen daemon
+          # cannot load on anything older than 14, while the app advertises 11
+          # and the check two steps down says so by name.
+          #
+          # The alternative is raising `minimumSystemVersion`, which would
+          # drop every Big Sur, Monterey and Ventura user to save a scan that
+          # is optional by design: without sqlite-vec, memory search falls back
+          # to a Python scan, which is correct and slower, and pyproject says
+          # exactly that. Keeping the floor is worth a slower search.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            python -m pip install '.[desktop,tor]' "pyinstaller==$PYINSTALLER_VERSION"
+          else
+            python -m pip install '.[desktop,tor,vec]' "pyinstaller==$PYINSTALLER_VERSION"
+          fi
 
       - name: Builds for the oldest macOS the app supports
         if: runner.os == 'macOS'

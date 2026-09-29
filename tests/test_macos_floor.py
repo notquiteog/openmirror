@@ -138,3 +138,33 @@ def test_the_floor_is_read_from_the_app_config(floor):
     assert conf == (11, 0), f'the app promises macOS {floor.shown(conf)}'
     assert floor.as_version('11.0') == (11, 0)
     assert floor.as_version('15.2') == (15, 2)
+
+
+# --- the build has to be able to satisfy the floor --------------------------
+
+
+def test_no_hard_dependency_pins_a_newer_macos_than_the_app_promises(floor):
+    """A dependency that ships a prebuilt binary for a newer macOS than the
+    app advertises cannot be `repin`ned, because there is no older build to
+    fetch. It has to be an *optional* extra, so that leaving it out is a
+    decision rather than a failure.
+
+    Checked against the declared dependencies rather than a list kept here,
+    because a list is one more thing to be wrong about.
+    """
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / 'pyproject.toml').read_text())
+    hard = list(pyproject['project']['dependencies'])
+    optional = pyproject['project']['optional-dependencies']
+
+    # `sqlite-vec` is the one that bites, and it is the reason the macOS build
+    # omits `vec`. Named here so that if it ever moves into a hard dependency
+    # this fails with the reason rather than with a name.
+    assert not any('sqlite' in line for line in hard), (
+        'sqlite-vec ships one prebuilt dylib built for macOS 14 with no older build; '
+        'as a hard dependency the frozen daemon cannot load on anything older'
+    )
+    assert any('sqlite-vec' in line for line in optional['vec']), (
+        'it belongs in an extra so it can be left out'
+    )
