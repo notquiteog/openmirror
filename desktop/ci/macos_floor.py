@@ -95,13 +95,51 @@ def repin() -> None:
             )
 
 
-def minimum_macos(path: Path) -> tuple[int, int] | None:
-    out = subprocess.run(['otool', '-arch', 'all', '-l', str(path)], capture_output=True, text=True, check=False).stdout
-    # LC_BUILD_VERSION says `minos 11.0`; the older LC_VERSION_MIN_MACOSX says
-    # `version 10.9`. Anything else calling itself a version reads 0.0 or is
-    # indented differently.
-    found = [as_version(v) for v in re.findall(r'^\s*(?:minos|version) (\d+\.\d+)', out, re.M)]
+def minimum_macos(text: str) -> tuple[int, int] | None:
+    """The oldest macOS a Mach-O file will load on, from `otool -l` output.
+
+    Only two load commands mean anything here, and the difference between them
+    and everything else is the whole of this function:
+
+    * `LC_BUILD_VERSION` says `minos 11.0`.
+    * `LC_VERSION_MIN_MACOSX` says `version 10.9`.
+
+    A third thing in the same output is a *version* and is not a macOS version
+    at all: `LC_ID_DYLIB` carries the library's own `compatibility version`
+    and `current version`, and the system's `libSystem` is on a scheme where
+    that number is in the thousands. Reading those — which the first version of
+    this did, by pattern-matching any line starting with `version` and taking
+    the largest — made every extension module in aiohttp, Pillow and
+    websockets claim to need macOS **1267**, and failed every macOS build of
+    the first release with a message about a version nobody could ship.
+
+    So the load command is tracked and a bare `version` is only believed under
+    `LC_VERSION_MIN_MACOSX`. `minos` is self-describing and needs no such
+    care.
+    """
+    found: list[tuple[int, int]] = []
+    command = ''
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.match(r'^cmd\s+(\S+)$', stripped)
+        if match:
+            command = match.group(1)
+            continue
+        minimum = re.match(r'^minos\s+(\d+\.\d+)', stripped)
+        if minimum:
+            found.append(as_version(minimum.group(1)))
+            continue
+        legacy = re.match(r'^version\s+(\d+\.\d+)', stripped)
+        if legacy and command == 'LC_VERSION_MIN_MACOSX':
+            found.append(as_version(legacy.group(1)))
     return max(found) if found else None
+
+
+def minimum_macos_in(path: Path) -> tuple[int, int] | None:
+    out = subprocess.run(
+        ['otool', '-arch', 'all', '-l', str(path)], capture_output=True, text=True, check=False
+    ).stdout
+    return minimum_macos(out)
 
 
 def check() -> None:
@@ -118,7 +156,7 @@ def check() -> None:
                         continue
             except OSError:
                 continue
-            found = minimum_macos(path)
+            found = minimum_macos_in(path)
             if found:
                 seen[path] = found
 
