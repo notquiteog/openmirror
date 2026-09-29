@@ -406,6 +406,14 @@ release before it is offered to run — an integrity check rather than a
 signature, and [docs/UPDATES.md](docs/UPDATES.md) says exactly what that does
 and does not catch. A stable install is never offered a release candidate.
 
+**A message typed while it is working waits its turn.** Send, and it is held
+and run when the turn in progress finishes. The moment you have something to
+add is usually *while* the agent is working on the first half of it, and the
+old answer — an error saying "interrupt it first" — threw away what you had
+just typed and made you watch for a gap to type in. An interrupt still
+throws the queue away with the turn: cancelling is cancelling, and a queue
+that outranked it would run work somebody threw away.
+
 **How full the conversation is.** A count under the composer, and a bar when
 there is a denominator to draw it against. The count is real; the bar is
 `None` for a model this project has not heard of, because a bar at 40% on a
@@ -413,6 +421,18 @@ model that will refuse the request is worse than no bar. It fills towards the
 point the conversation gets *summarised*, which is the number that decides
 whether to keep going. There is no cost in dollars: a price is out of date the
 moment a provider changes one, and somebody reads a stale number as a bill.
+
+**Review a turn one hunk at a time.** "Review changes" sits beside Rewind,
+because they are different decisions: rewind throws a whole turn away, review
+keeps the parts you agree with. Every block in the diff is a choice, and
+changes rarely deserve all-or-nothing — of the four things a turn did, three
+are right and the fourth is wrong, and undoing the turn to get rid of the
+fourth throws the three away. Nothing is written until you press the button,
+which says how many hunks in how many files it is about to put back.
+
+The file is *rebuilt* from the turn's before- and after-content rather than
+patched, so applying a second choice cannot land in the wrong place, and what
+you were shown and what gets written cannot drift apart.
 
 **`@` for a file.** Type it in the composer and a list of files in the working
 root appears, ranked so the one you meant is first. Enter completes a partial

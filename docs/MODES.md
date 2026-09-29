@@ -205,3 +205,27 @@ completes a partial name and sends a finished one — the same rule the slash
 menu uses and for the same reason: `@app` then Enter means the file, and
 `@src/app.js` then Enter means send it. Escape closes the list and keeps the
 text.
+
+## Review, and the queue
+
+Neither is a mode, and both are worth a paragraph because each is a decision
+rather than a place.
+
+**Review changes** is beside Rewind in the rail, not inside it. They are
+different acts: rewind throws a whole turn away, review keeps the parts you
+agree with. Every block in the diff is a choice, and the button says how many
+hunks in how many files it is about to put back before you press it.
+
+The file is rebuilt from the turn's recorded before- and after-content rather
+than patched. That is why applying a second choice cannot land in the wrong
+place — a patch applied to a file an earlier patch already changed is a patch
+applied to text that is no longer what it was computed against.
+
+If a file was edited by hand after the turn, the review says so and the apply
+is refused until you confirm: those hunks are not what is in the file, and
+writing over it would lose the edit.
+
+**The composer takes a message while a turn is running**, and holds it until
+that turn finishes. The send button stays on screen and says what it will do;
+before, it was replaced by Stop, so the server could queue but nothing could
+reach it. An interrupt still discards the queue — cancelling is cancelling.
