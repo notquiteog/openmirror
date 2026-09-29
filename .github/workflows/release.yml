@@ -284,7 +284,21 @@ jobs:
           $msi = Get-ChildItem out\*.msi | Select-Object -First 1
           $run = Start-Process msiexec -ArgumentList '/i', "`"$($msi.FullName)`"", '/qn', '/l*v', 'msi.log' -Wait -PassThru
           if ($run.ExitCode -ne 0) { Get-Content msi.log -Tail 60; throw "msiexec exited with $($run.ExitCode)" }
-          Get-ChildItem "$env:ProgramFiles\openmirror"
+          # Looked for rather than assumed. Tauri v2's MSI installs per-user
+          # by default, so the app lands under LOCALAPPDATA — the same place
+          # the NSIS installer above put it — and looking in Program Files
+          # failed a build whose MSI had installed correctly. The check is that
+          # the thing is on disk and runnable, not where a given WiX scope
+          # happens to put it.
+          $found = Get-ChildItem "$env:LOCALAPPDATA","$env:ProgramFiles" -Recurse -Depth 3 `
+            -Filter openmirror-desktop.exe -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $found) {
+            Get-Content msi.log -Tail 40
+            throw 'the .msi reported success but left no openmirror-desktop.exe anywhere'
+          }
+          "MSI_APP=$($found.FullName)" | Write-Output
+          Get-ChildItem $found.Directory
 
   test-macos:
     name: test (${{ matrix.name }})
