@@ -168,3 +168,68 @@ def test_no_hard_dependency_pins_a_newer_macos_than_the_app_promises(floor):
     assert any('sqlite-vec' in line for line in optional['vec']), (
         'it belongs in an extra so it can be left out'
     )
+
+
+# --- the icons, which the bundler reads by size ------------------------------
+
+
+def png_size(path: Path) -> tuple[int, int] | None:
+    """Width and height out of a PNG's header, or None if it is not one."""
+    import struct
+
+    data = path.read_bytes()
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        return None
+    return struct.unpack('>II', data[16:24])
+
+
+def test_every_declared_icon_is_the_size_its_name_promises():
+    """`128x128@2x.png` has to be 256x256. It was not: it was a byte-identical
+    copy of `128x128.png` under the `@2x` name, and the macOS bundler refused
+    the build with `Failed to create app icon: 'No matching IconType'` — a
+    message that names neither the file nor the reason, on a platform whose
+    build nobody on the project can run locally.
+
+    Read by the name rather than by a list, because the list is the thing that
+    is wrong: a new icon added to the config is checked, and one renamed is
+    caught here.
+    """
+    import json
+    import re
+
+    conf = json.loads((ROOT / 'desktop' / 'src-tauri' / 'tauri.conf.json').read_text())
+    declared = conf['bundle']['icon']
+    assert declared, 'the bundle declares no icons'
+
+    checked = 0
+    for entry in declared:
+        path = ROOT / 'desktop' / 'src-tauri' / entry
+        assert path.is_file(), f'{entry} is declared but missing'
+        size = png_size(path)
+        if size is None:
+            continue  # icon.ico
+        # `icon.png` and `icon.ico` carry no size in their name; the numbered
+        # ones do, and the number is a promise about the file.
+        name = path.name
+        base = name.split('@')[0]
+        if not re.match(r'^\d+x\d+', base):
+            continue
+        checked += 1
+        # `@2x` is the retina variant of the size before the `@`, doubled.
+        wanted = int(base.split('x')[0]) * (2 if '@2x' in name else 1)
+        assert size[0] == wanted, f'{name} is {size[0]}x{size[1]}, and its name promises {wanted}'
+
+    assert checked >= 3, f'only {checked} icons carried a size in their name; has the layout changed?'
+
+
+def test_the_two_retina_icons_are_not_the_same_file():
+    """The specific thing that was wrong, kept as its own assertion because
+    it is the shape a careless copy takes and nothing else catches it."""
+    pair = [
+        ROOT / 'desktop' / 'src-tauri' / 'icons' / '128x128.png',
+        ROOT / 'desktop' / 'src-tauri' / 'icons' / '128x128@2x.png',
+    ]
+    assert all(p.is_file() for p in pair)
+    assert pair[0].read_bytes() != pair[1].read_bytes(), (
+        '128x128@2x.png is a copy of 128x128.png'
+    )
