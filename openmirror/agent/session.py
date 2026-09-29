@@ -134,6 +134,30 @@ def _slash(text: str) -> tuple[str, str]:
 
 
 @dataclass(slots=True)
+class _Prompt:
+    """A prompt, shaped like a tool call so the hook runner can carry it.
+
+    `UserPromptSubmit` is about a message rather than a tool, and the runner
+    was written for tools. Giving the prompt the same three fields a tool call
+    has — name, arguments, summary — is less code than a second code path, and
+    a hook that reads one JSON object does not have to care which it was.
+    """
+
+    text: str
+    name: str = 'prompt'
+    arguments: dict[str, Any] = field(default_factory=dict)
+    summary: str = ''
+
+    def __post_init__(self) -> None:
+        # Set after __init__ so the two defaults above stay literals, and
+        # truncated because this ends up in an approval prompt.
+        if not self.summary:
+            self.summary = ' '.join(self.text.split())[:120]
+        if not self.arguments:
+            self.arguments = {'text': self.text}
+
+
+@dataclass(slots=True)
 class Report:
     """What a subagent hands back to the session that started it."""
 
@@ -681,6 +705,31 @@ class AgentSession:
     ) -> None:
         await self._emit(TurnStarted(session_id=self.id, turn_id=turn_id, text=text))
 
+        # `UserPromptSubmit`, before the turn does anything at all. A hook that
+        # refuses here stops the turn rather than a tool call inside it, which
+        # is the only useful place for it: this is the "you are about to ask
+        # the agent to do a whole thing" moment, and a check that runs after
+        # the model has already read four files is a check that arrives too
+        # late to save the work.
+        if self.hooks:
+            gate = await self._hooks_run('UserPromptSubmit', _Prompt(text), turn_id=turn_id)
+            if gate.blocked:
+                await self._emit(
+                    TurnCompleted(session_id=self.id, turn_id=turn_id, stop_reason='interrupted')
+                )
+                # The reason goes into the conversation rather than only into
+                # the log: a turn that ends with nothing in the transcript is a
+                # turn that looks like the agent went quiet for no reason.
+                self.messages.append(Message(role='user', content=[TextBlock(
+                    text='A hook on this project stopped this before the turn started. '
+                         f'Its reason:\n{gate.blocked}'
+                )]))
+                return
+            if gate.notes:
+                # Passed to the model as part of the turn rather than shown to
+                # the person: whatever a hook adds is for the model to use.
+                prompt = f'{prompt or text}\n\nA hook said:\n{gate.notes}'
+
         if self.checkpoints is not None:
             # Opened before anything runs, so the snapshot is of the tree as it
             # was when the person asked, not partway through the answer.
@@ -764,6 +813,21 @@ class AgentSession:
                 context=self.context_report(),
             )
         )
+        # `Stop`, once the turn is genuinely over. Advisory by construction —
+        # a non-zero exit is reported to the person and not to the model,
+        # because there is no next step for the model to take. A `Stop` hook
+        # that could veto a finished turn would be vetoing the past.
+        if self.hooks:
+            stopped = await self._hooks_run('Stop', _Prompt(text), turn_id=turn_id)
+            for problem in stopped.problems:
+                log.info('session %s: %s', self.id, problem)
+                await self._emit(
+                    ToolDenied(
+                        session_id=self.id, turn_id=turn_id, call_id='',
+                        reason=f'a Stop hook said: {problem}',
+                    )
+                )
+
         self._drain_queue()
 
     async def _loop(self, turn_id: str, usage: dict[str, int]) -> str:

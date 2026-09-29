@@ -32,9 +32,15 @@ be strictly weaker than your own configuration. It is.
 | event | when | can refuse |
 |---|---|---|
 | `PreToolUse` | before a tool runs | **yes** |
+| `UserPromptSubmit` | before a turn starts | **yes** |
 | `PostToolUse` | after a tool ran | no — advisory |
-| `UserPromptSubmit` | before a turn | yes |
 | `Stop` | when a turn ends | no — advisory |
+
+Which are which is one list in `openmirror/agent/hooks.py`, and
+`test_every_event_the_docs_say_can_refuse_actually_can` reads this table and
+compares. It is here because `UserPromptSubmit` was listed as refusable here
+and implemented only for `PreToolUse`, so a hook that stopped a turn was
+silently advisory.
 
 `PostToolUse` is advisory because the tool has already run. A linter
 complaining about a failed edit is worth hearing about; reporting work that

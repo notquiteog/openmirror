@@ -130,6 +130,9 @@ const TOOL_STATES = {
   // mail is from the creature's side: something beyond this window that it
   // is paying attention to.
   calendar: 'reading',
+  // Someone's leave, and what the record says about it. Reading, like the
+  // calendar: it is looking at a ledger, not changing anything.
+  hr: 'reading',
   ask_user: 'waiting',
 };
 

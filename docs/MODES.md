@@ -229,3 +229,14 @@ writing over it would lose the edit.
 that turn finishes. The send button stays on screen and says what it will do;
 before, it was replaced by Stop, so the server could queue but nothing could
 reach it. An interrupt still discards the queue — cancelling is cancelling.
+
+## Leave
+
+Not a mode either, and not a tab. It is a `hr` tool over a local ledger, and
+the interface to it is a conversation: you ask about a request, it tells you
+what your own record says, and you decide.
+
+There is nothing to click because there is nothing to click. The ledger is
+behind the model, which is the point — see [LEAVE.md](LEAVE.md) for why the
+assessment answers with evidence and a band rather than a verdict, and for
+when it declines to answer at all.

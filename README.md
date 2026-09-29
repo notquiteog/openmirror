@@ -203,7 +203,9 @@ routing and Tor in [docs/PROVIDERS.md](docs/PROVIDERS.md). Mail has its own
 page — [docs/MAIL.md](docs/MAIL.md) — because why IMAP rather than a vendor
 API, and what `threadId` is worth, do not fit in a paragraph. Hooks have
 [docs/HOOKS.md](docs/HOOKS.md), where the property that makes running a
-project's code defensible is written out in full.
+project's code defensible is written out in full. Leave has
+[docs/LEAVE.md](docs/LEAVE.md) — mostly about when the assessment
+*declines* to answer — which is the part that matters.
 
 **The web, and a real browser.** `web_search` and `web_fetch` for reading,
 `research` for answering — several searches and the pages behind them in one
@@ -423,6 +425,23 @@ model that will refuse the request is worse than no bar. It fills towards the
 point the conversation gets *summarised*, which is the number that decides
 whether to keep going. There is no cost in dollars: a price is out of date the
 moment a provider changes one, and somebody reads a stale number as a bill.
+
+**Leave, and what your own record says about it.** A local ledger of requests
+and the decisions on them, and an `assess` action that gathers the evidence
+for a request you have not decided yet: the closest past decisions with
+their reasons, the policy you wrote in your own words, the notice that person
+gives, and what is already booked.
+
+It returns a **band, never a percentage** — `clear`, `coin-flip`, `unlikely`,
+and nothing at all until there are four comparable decisions, because
+"73% likely" from nine requests is a number that looks like knowledge and
+isn't. And it says when it declines to answer: a request longer than anything
+you have decided before, or somebody with no record of their own, gets the
+evidence and *not* a reading. The judgement is the model's; a tool that
+answered "approve" would have taken a decision that is yours.
+
+Nothing is sent anywhere — no sync, no token, no payroll leaving the machine.
+An install that wants a real HR system reaches it through a hook.
 
 **Hooks — your own commands around a tool call.** Settings has a Hooks
 panel. A hook is a command that gets the call as JSON on stdin and can refuse

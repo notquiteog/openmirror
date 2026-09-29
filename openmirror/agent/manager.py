@@ -131,6 +131,7 @@ class SessionManager:
             web=cfg if cfg.web_enabled else None,
             mail=cfg if cfg.mail_enabled else None,
             calendar=cfg if cfg.calendar_enabled else None,
+            hr=cfg if cfg.hr_enabled else None,
             browser=browser,
             stage=stage,
             media=media,

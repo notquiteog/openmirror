@@ -457,6 +457,8 @@ const VERBS = {
   git: 'Checked the repository for',
   mail: 'Mail',
   calendar: 'Checked the calendar for',
+  mail: 'Mail',
+  hr: 'HR',
   ask_user: 'Asked you',
 };
 

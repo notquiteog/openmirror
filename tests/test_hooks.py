@@ -379,6 +379,7 @@ async def test_a_hook_stops_a_real_tool_call_and_the_model_is_told_why(tmp_path)
     await session.start()
     session.submit('run echo hi')
     await asyncio.wait_for(drain(session), timeout=10)
+    await session.close()
 
     from openmirror.providers.base import ToolResultBlock
 
@@ -416,6 +417,7 @@ async def test_a_hook_cannot_stop_a_call_it_has_not_been_agreed_to(tmp_path):
     await session.start()
     session.submit('run echo hi')
     await asyncio.wait_for(drain(session), timeout=10)
+    await session.close()
 
     said = [b.text for m in session.messages for b in m.content if hasattr(b, 'text')]
     assert not any('stopped this call' in t for t in said), said
@@ -497,3 +499,147 @@ def test_the_strip_says_a_hook_can_only_take_away():
     """The asymmetry, said where the person makes the decision."""
     client = (Path(__file__).resolve().parents[1] / 'openmirror' / 'static' / 'hooks.js').read_text()
     assert 'never allow one' in client
+
+
+# --- the two events that are not about a tool ----------------------------------
+
+
+async def test_a_prompt_hook_can_stop_a_turn_before_it_starts(tmp_path):
+    """The only place a prompt check is useful: before the model has read four
+    files and done work that a refusal would then throw away."""
+    from openmirror.agent.approval import Mode
+    from openmirror.agent.runtime import build_session
+    from openmirror.providers.base import StreamDone, StreamText
+    from tests.test_agent import ScriptedProvider, drain
+
+    # A script, because that is what a real hook is, and because a one-liner
+    # full of `&&` and braces is a quoting problem rather than a test.
+    guard = tmp_path / 'guard.sh'
+    guard.write_text(
+        '#!/bin/sh\n'
+        'grep -q deploy || exit 0\n'
+        'echo "no deployments from here" >&2\n'
+        'exit 1\n'
+    )
+    guard.chmod(0o755)
+    provider = ScriptedProvider([[StreamText(text='deploying'), StreamDone()]])
+    session = build_session(
+        root=str(tmp_path), provider=provider, model='x', mode=Mode.TRUSTED,
+        hooks=[Hook(event='UserPromptSubmit', command=str(guard))],
+    )
+    session.hooks_agreed.add(str(guard))
+    await session.start()
+    session.submit('deploy the thing')
+    await asyncio.wait_for(drain(session), timeout=10)
+    await session.close()
+
+    said = [b.text for m in session.messages for b in m.content if hasattr(b, 'text')]
+    assert not any('deploying' == t for t in said), 'the model was asked anyway'
+    assert any('no deployments from here' in t for t in said), said
+
+
+async def test_a_prompt_hook_can_add_context_the_model_uses(tmp_path):
+    """A hook that passes but has something to say gets it said *in the turn*
+    rather than shown to the person, because whatever it added is for the
+    model to use."""
+    from openmirror.agent.approval import Mode
+    from openmirror.agent.runtime import build_session
+    from openmirror.providers.base import StreamDone, StreamText, StreamToolUse
+    from tests.test_agent import ScriptedProvider, drain
+
+    # The note comes back on stdout, and `run` reads stdout for exactly this.
+    command = 'grep -q check && echo "the staging box is offline"'
+    provider = ScriptedProvider([
+        [StreamToolUse(id='t1', name='list_dir', input={}), StreamDone(stop_reason='tool_use')],
+        [StreamText(text='noted'), StreamDone()],
+    ])
+    session = build_session(
+        root=str(tmp_path), provider=provider, model='x', mode=Mode.TRUSTED,
+        hooks=[Hook(event='UserPromptSubmit', command=command)],
+    )
+    session.hooks_agreed.add(command)
+    await session.start()
+    session.submit('check the boxes')
+    await asyncio.wait_for(drain(session), timeout=10)
+    await session.close()
+
+    said = [b.text for m in session.messages for b in m.content if hasattr(b, 'text')]
+    # In the turn the model actually gets: the prompt it is sent is the
+    # person's text *plus* the hook's note, so both are in one block. A note
+    # that only appeared in the transcript would be a note the model cannot
+    # use, which is the whole point of the event.
+    turn_text = next((t for t in said if 'check the boxes' in t), '')
+    assert 'check the boxes' in turn_text, said
+    assert 'the staging box is offline' in turn_text, turn_text
+
+
+async def test_a_stop_hook_is_reported_and_changes_nothing(tmp_path):
+    """A `Stop` hook that could veto a finished turn would be vetoing the
+    past, so a non-zero exit is a note to the person and not to the model."""
+    from openmirror.agent.approval import Mode
+    from openmirror.agent.runtime import build_session
+    from openmirror.providers.base import StreamDone, StreamText
+    from tests.test_agent import ScriptedProvider, drain
+
+    command = 'echo "remember to run the migrations" >&2; exit 1'
+    provider = ScriptedProvider([[StreamText(text='all done'), StreamDone()]])
+    session = build_session(
+        root=str(tmp_path), provider=provider, model='x', mode=Mode.TRUSTED,
+        hooks=[Hook(event='Stop', command=command)],
+    )
+    session.hooks_agreed.add(command)
+    await session.start()
+    session.submit('do the thing')
+    await asyncio.wait_for(drain(session), timeout=10)
+    await session.close()
+
+    said = [b.text for m in session.messages for b in m.content if hasattr(b, 'text')]
+    assert 'all done' in said, 'the turn finished as it would have'
+    assert not any('run the migrations' in t for t in said), 'and the model was not told to act on it'
+
+
+def test_every_event_the_docs_say_can_refuse_actually_can():
+    """The gap this file found in the feature it shipped.
+
+    `UserPromptSubmit` was listed as refusable in the docs and only implemented
+    for `PreToolUse`, so a hook that stopped a turn was silently advisory —
+    and it showed up as a *complaint* instead, which is the worst version:
+    the turn carried on and the reason was in a field nothing reads.
+    """
+    from openmirror.agent.hooks import BLOCKING, EVENTS
+
+    # Every blocking event is a real event, and every real event is listed.
+    assert set(BLOCKING) <= set(EVENTS)
+    for event in BLOCKING:
+        assert not interpret(event, 1, '', 'because', Hook(event=event, command='x')).ok, event
+    for event in EVENTS:
+        if event not in BLOCKING:
+            assert interpret(event, 1, '', 'because', Hook(event=event, command='x')).ok, event
+
+    # And the docs and the code agree about which are which.
+    docs = (Path(__file__).resolve().parents[1] / 'docs' / 'HOOKS.md').read_text()
+    for event in EVENTS:
+        row = next((ln for ln in docs.splitlines() if f'`{event}`' in ln and '|' in ln), '')
+        says_yes = '**yes**' in row
+        assert says_yes is (event in BLOCKING), f'{event}: docs say {says_yes}, code says {event in BLOCKING}'
+
+
+def test_every_toolset_group_is_offered_in_the_new_session_dialog():
+    """A group that exists but is not in the picker is a toolset nobody can
+    ask for without editing the dialog's HTML, and `hr` was exactly that.
+    """
+    import re
+
+    index = (Path(__file__).resolve().parents[1] / 'openmirror' / 'static' / 'index.html').read_text()
+    from openmirror.agent.runtime import TOOLSETS
+
+    block = index[index.index('name="tools"'):]
+    block = block[:block.index('</select>')]
+    offered = set(re.findall(r'value="([\w,-]+)"', block))
+    # The unnamed first option means "everything it has", so it covers the
+    # rest; the named ones must be real groups.
+    for value in offered - {''}:
+        for group in value.split(','):
+            assert group in TOOLSETS, f'the dialog offers {group!r}, which is not a toolset'
+    for group in ('git', 'mail', 'calendar', 'hr'):
+        assert group in offered, f'{group} is a toolset and is not in the dialog'

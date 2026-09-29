@@ -58,6 +58,12 @@ MAX_OUTPUT = 8_000
 # version understands.
 EVENTS = ('PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop')
 
+# Which of them can refuse. Derived from the same list on purpose: the first
+# version listed `UserPromptSubmit` as refusable in the docs and only
+# implemented it for `PreToolUse`, so a hook that stopped a turn was silently
+# advisory. A second list is a second thing to be wrong about.
+BLOCKING = ('PreToolUse', 'UserPromptSubmit')
+
 
 class HookError(RuntimeError):
     """A hook could not be run at all."""
@@ -237,11 +243,17 @@ def payload(event: str, call: Any = None, *, session_id: str = '', cwd: str = ''
     """
     body: dict[str, Any] = {'event': event, 'session_id': session_id, 'cwd': cwd}
     if call is not None:
+        risk = getattr(call, 'risk', None)
         body.update({
-            'tool': call.name,
-            'arguments': call.arguments,
-            'summary': call.summary,
-            'risk': getattr(call.risk, 'value', ''),
+            'tool': getattr(call, 'name', ''),
+            'arguments': getattr(call, 'arguments', {}),
+            'summary': getattr(call, 'summary', ''),
+            # A prompt has no risk — there is no tool call to grade. Read
+            # defensively rather than assuming a tool, because the two events
+            # that carry something else would otherwise fail on a field they
+            # do not have, and a hook that crashes is a hook that silently
+            # stops being one.
+            'risk': getattr(risk, 'value', ''),
         })
     return body
 
@@ -249,11 +261,10 @@ def payload(event: str, call: Any = None, *, session_id: str = '', cwd: str = ''
 def interpret(event: str, code: int, out: str, err: str, hook: Hook) -> HookOutcome:
     """An exit code into a decision.
 
-    `PreToolUse` is the only event that can block, because it is the only one
-    that runs before the thing it is judging. `PostToolUse` is advisory: the
-    tool has already run, so a non-zero exit is a *complaint*, not a
-    veto, and pretending otherwise would mean reporting work that had already
-    happened as work that did not.
+    The events in `BLOCKING` can refuse, because they run before the thing
+    they are judging. The others are advisory: by the time `PostToolUse` runs
+    the tool has already happened, and pretending otherwise would mean
+    reporting work that had already happened as work that did not.
     """
     name = hook.name or hook.command
     text = (out or '').strip()
@@ -264,7 +275,7 @@ def interpret(event: str, code: int, out: str, err: str, hook: Hook) -> HookOutc
         # not had an opinion.
         return HookOutcome(problems=[f'{name}: could not start (exit {code})'])
 
-    if event == 'PreToolUse':
+    if event in BLOCKING:
         if code == 0:
             return HookOutcome(ran=[name], notes=text[:MAX_OUTPUT])
         reason = (problems or text or f'{name} exited {code}').strip()
@@ -414,6 +425,7 @@ def command_of(hook: Hook) -> str:
 
 
 __all__ = [
-    'DEFAULT_TIMEOUT', 'EVENTS', 'FILES', 'Hook', 'HookError', 'HookOutcome', 'command_of', 'describe',
+    'BLOCKING', 'DEFAULT_TIMEOUT', 'EVENTS', 'FILES', 'Hook', 'HookError', 'HookOutcome', 'command_of',
+    'describe',
     'find', 'interpret', 'parse', 'payload', 'run',
 ]

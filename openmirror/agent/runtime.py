@@ -51,6 +51,7 @@ TOOLSETS: dict[str, tuple[str, ...]] = {
     # on a machine with no mailbox is a tool that can only fail.
     'mail': ('mail',),
     'calendar': ('calendar',),
+    'hr': ('hr',),
     'todo': ('todo',),
     'agents': ('agent',),
     'skills': ('skill',),
@@ -102,6 +103,22 @@ def default_tools() -> list[Tool]:
         TodoTool(),
         AskUserTool(),
     ]
+
+
+def hr_tools(cfg: Any) -> list[Tool]:
+    """The `hr` tool, when there is somewhere to keep the ledger.
+
+    Offered whenever the feature is on, not only once somebody has been added:
+    the ledger is nearly always empty on a fresh install and the first request
+    is the one that creates it, and a tool that appears the moment a file
+    lands is a tool the model has never seen in a schema it was told about.
+    """
+    if not getattr(cfg, 'hr_enabled', False):
+        return []
+    from openmirror.agent.tools.hr import HrTool
+    from openmirror.hr.store import Ledger
+
+    return [HrTool(Ledger(getattr(cfg, 'hr_db', '')))]
 
 
 def calendar_tools(cfg: Any) -> list[Tool]:
@@ -236,6 +253,7 @@ def build_session(
     # means no mail or calendar tool at all.
     mail: Any = None,
     calendar: Any = None,
+    hr: Any = None,
     toolset: list[str] | None = None,
     mcp: Any = None,
     checkpoints: Any = None,
@@ -300,6 +318,8 @@ def build_session(
         chosen = [*chosen, *mail_tools(mail)]
     if calendar is not None:
         chosen = [*chosen, *calendar_tools(calendar)]
+    if hr is not None:
+        chosen = [*chosen, *hr_tools(hr)]
     if browser is not None:
         chosen = [*chosen, *browser_tools(browser)]
     if stage is not None:
@@ -385,6 +405,7 @@ def build_session(
             ('git', 'git'),
             ('mail', 'mail'),
             ('calendar', 'calendar'),
+            ('hr', 'hr'),
         )
         if marker in names
     ]

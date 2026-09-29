@@ -149,6 +149,17 @@ class Config:
     # may have the two configured independently.
     mail_protocol: str = field(default_factory=lambda: os.getenv('OPENMIRROR_MAIL_PROTOCOL', ''))
 
+    # --- leave --------------------------------------------------------------
+    # A local ledger of requests and the decisions on them. Not a connector to
+    # anyone's HR system: see openmirror/hr/store.py for why, and for why an
+    # install that wants one should reach it through a hook instead.
+    hr_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_HR'))
+    hr_db: Path = field(
+        default_factory=lambda: Path(os.getenv('OPENMIRROR_HR_DB', ''))
+        if os.getenv('OPENMIRROR_HR_DB')
+        else Path(os.getenv('OPENMIRROR_DATA_DIR', './data')) / 'hr.db'
+    )
+
     # --- updates ------------------------------------------------------------
     # Ask GitHub whether there is a newer release. On, once a day at most, and
     # the answer is only ever shown — nothing is downloaded without somebody
