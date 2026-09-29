@@ -382,7 +382,7 @@ def test_the_repository_is_not_configurable():
     ships code from somewhere else, and there is no version of that which is
     a feature rather than a vulnerability."""
     assert REPO == 'notquiteog/openmirror'
-    assert f'/{REPO}/' in API
+    assert f'repos/{REPO}' in API
     source = (Path(__file__).resolve().parents[1] / 'openmirror' / 'config.py').read_text()
     assert 'UPDATE_REPO' not in source and 'UPDATE_URL' not in source
 
@@ -468,3 +468,68 @@ async def test_a_rate_limit_is_named_as_a_rate_limit(tmp_path, monkeypatch):
     got = await held.check(force=True)
     assert 'rate limit' in got['error']
     assert 'nothing is wrong with this install' in got['error']
+
+
+def test_the_api_url_is_built_once():
+    """A bug that reported the truth by accident.
+
+    The releases path was appended both to the constant and at the call site,
+    so the request went to `.../openmirror/releases/releases` and GitHub
+    answered 404. A 404 from this call is reported as "no releases published
+    yet" — which is what it said for the whole of a project that had none,
+    and which is why nothing looked wrong until the first tag.
+
+    Every test here mocks the network, which is the point of this one: a test
+    that cannot see the URL cannot catch a URL that is wrong.
+    """
+    from openmirror.update import API, REPO
+
+    assert API == f'https://api.github.com/repos/{REPO}', 'the API root already names a path'
+    built = API + '/releases?per_page=10'
+    assert built.count('/releases') == 1, f'the releases path is doubled: {built}'
+    assert built == f'https://api.github.com/repos/{REPO}/releases?per_page=10'
+
+
+async def test_the_check_asks_for_the_url_it_thinks_it_does(tmp_path, monkeypatch):
+    """And the same thing with a real request, so the two cannot drift.
+
+    Skipped rather than stubbed where there is no network, because the whole
+    bug was that a stub could not see it.
+    """
+    from openmirror.config import config
+
+    monkeypatch.setattr(config, 'local_only', False)
+    monkeypatch.setattr(config, 'update_check_enabled', True)
+    held = Updates('0.1.0', tmp_path)
+
+    seen: list[str] = []
+
+    async def watch(url, headers, **kw):
+        seen.append(url)
+        raise NoReleasesYet(url)
+
+    from openmirror.update import NoReleasesYet
+
+    held._fetch = watch
+    await held.check(force=True)
+    assert seen == ['https://api.github.com/repos/notquiteog/openmirror/releases?per_page=10']
+
+
+def test_the_version_comes_from_the_package_and_not_a_literal():
+    """A literal in the router was a second place for the version to be wrong,
+    and the CI check only reads pyproject.toml and Cargo.toml — so a bump
+    could pass every check and still ship a daemon that reports the old number
+    to the updater, which is a daemon that never offers itself an update."""
+    import tomllib
+    from pathlib import Path
+
+    from openmirror.routers.updates import VERSION, version
+
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / 'pyproject.toml').read_text())
+    assert VERSION == pyproject['project']['version'], (
+        f'the updater reports {VERSION}, the package says {pyproject["project"]["version"]}'
+    )
+    assert version() == VERSION
+
+    source = (Path(__file__).resolve().parents[1] / 'openmirror' / 'routers' / 'updates.py').read_text()
+    assert "VERSION = '0" not in source, 'the version is a literal again'

@@ -58,7 +58,13 @@ log = logging.getLogger(__name__)
 # somewhere else, and there is no version of that which is a feature rather
 # than a vulnerability.
 REPO = 'notquiteog/openmirror'
-API = f'https://api.github.com/repos/{REPO}/releases'
+# The repository's API root, *not* the releases endpoint. Appending `/releases`
+# here as well as at the call site produced
+# `.../repos/notquiteog/openmirror/releases/releases`, which GitHub answers
+# with a 404 — and a 404 from this call is reported as "no releases published
+# yet", which is exactly what it said for six months of a project with no
+# releases. A bug that reports the truth by accident.
+API = f'https://api.github.com/repos/{REPO}'
 
 # A release body is written for a browser. Truncated for a notification and
 # for the interface, because the alternative is a dialog nobody can close.

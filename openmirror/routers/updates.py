@@ -36,7 +36,42 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/update')
 
-VERSION = '0.1.0'
+def version() -> str:
+    """What this install is, from its own metadata.
+
+    A literal here was a second place for the version to be wrong, and the CI
+    check only looks at pyproject.toml and Cargo.toml — so a bump could pass
+    every check and still ship a daemon that reports the old number to the
+    updater, which is a daemon that never offers itself an update.
+    """
+    # The file first, and the installed metadata second, which is the opposite
+    # of the usual order and is right for both cases.
+    #
+    # A frozen daemon has no pyproject.toml beside it, so it reads the
+    # metadata frozen in with it — authoritative, and the only option. A
+    # daemon running from a source tree *does* have one, and there the
+    # installed metadata is the stale one: an editable install still says
+    # 0.1.0 the moment pyproject is bumped, so a version read from it would
+    # keep reporting the number this checkout stopped being several commits
+    # ago, and would offer itself a downgrade.
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[2] / 'pyproject.toml'
+    try:
+        return str(tomllib.loads(pyproject.read_text())['project']['version'])
+    except (OSError, KeyError, ValueError):
+        pass
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as installed
+
+    try:
+        return installed('openmirror')
+    except PackageNotFoundError:
+        return '0.0.0'
+
+
+VERSION = version()
 
 updates = Updates(VERSION, config.update_staging)
 
