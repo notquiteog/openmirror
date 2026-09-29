@@ -28,6 +28,7 @@ import { cancel as cancelStream, flush as flushStream, queue } from './stream.js
 import { openStudio, stopPolling, wireStudio } from './studio.js';
 import { startTalking, stopTalking, talking, wireTalk } from './talk.js';
 import { renderContext, refreshContext, wireContext } from './context.js';
+import { refreshReview, resetReview, wireReview } from './review.js';
 import { renderUpdate, watchUpdates, wireUpdates } from './updates.js';
 import { Voice } from './voice.js';
 import { narrate, refreshRuns, wireWatch } from './watch.js';
@@ -1029,10 +1030,16 @@ function flushOutbox() {
 
 function setBusy(busy) {
   state.busy = busy;
-  // The send button becomes the stop button while a turn is running: one
-  // place to look, and no way to queue a second turn into a busy session.
-  $('#send').disabled = busy || !state.sessionId;
-  $('#send').hidden = busy;
+  /* Both buttons, and they do different things. This used to hide send and
+     leave only stop, which is the honest layout for a client that cannot
+     queue — and it made the queue unreachable, since a hidden button cannot be
+     pressed and Enter was refused by the same check. The server holds a
+     message sent while busy, so the interface has to offer to. */
+  $('#send').disabled = !state.sessionId;
+  $('#send').hidden = false;
+  $('#send').title = busy
+    ? 'Queue this — it runs when the turn in progress finishes'
+    : 'Send';
   $('#stop').hidden = !busy;
 }
 
@@ -1215,6 +1222,14 @@ function handleAgentEvent(ev) {
       companion.set('waiting');
       break;
 
+    case 'turn.queued': {
+      /* The text is already echoed into the transcript, so saying nothing
+         here would show a message sitting in the composer that is neither
+         running nor lost — the one outcome this feature exists to remove. */
+      notice(`Held — it runs when this turn finishes (${ev.waiting} waiting).`);
+      break;
+    }
+
     case 'turn.completed': {
       /* The turn's last words are almost certainly still queued. This card is
          the end of the turn, so anything buffered has to land before it — an
@@ -1237,6 +1252,9 @@ function handleAgentEvent(ev) {
       // and is right for the moment the turn ended rather than for whenever
       // somebody thought to ask.
       if (ev.context) renderContext(ev.context);
+      // A turn that edited files is reviewable, and the button should be there
+      // when the turn ends rather than when somebody goes looking for it.
+      refreshReview();
       if (ev.stop_reason === 'interrupted') notice('Interrupted.');
       else if (ev.stop_reason === 'max_steps') notice('Stopped: too many steps.', 'error');
       else if (ev.stop_reason === 'error') companion.flash('error');
@@ -1964,12 +1982,19 @@ function selectSession(id) {
   // The file list belongs to the session it was asked about; offering files
   // from the one just left is worse than offering none.
   resetFiles();
+  resetReview();
   loadCommands(id);
   rememberSession(id);
   // A reattached session has the transcript but never saw the turn that
   // produced it, so the meter is empty until it asks. Deliberately after the
   // id is set, so the request is about the session being shown.
   refreshContext(id);
+  // And the review button has to be re-asked about too. `resetReview` above
+  // hides it because the old session's hunks are not this one's — and a
+  // button that stays hidden after switching to a session with changes is a
+  // feature that only works on whichever session you happened to start in.
+  // One small request, next to the command list this already fetches.
+  refreshReview();
   connectAgent(id);
   loadSessions();
 }
@@ -2063,10 +2088,15 @@ function wire() {
   $('#composer').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || state.busy) return;
+    if (!text) return;
     // Echoed immediately so typing feels instant; the server's turn.started
     // replaces it, so live and replayed conversations render identically.
     state.echo = userTurn(text);
+    // Sent while busy too. The server holds it and starts it when the running
+    // turn ends, which is the whole point: the moment you have something to
+    // add is usually *while* the agent is working on the first half of it, and
+    // an error saying "interrupt it first" throws away what you just typed
+    // and makes you watch for a gap to type in.
     send({ type: 'turn.submit', text });
     hideSlash();
     input.value = '';
@@ -2250,6 +2280,7 @@ wireSearch();
 wireMail();
 wireCommit();
 wireContext();
+wireReview({ sessionId });
 wireFiles({ sessionId, request: (path) => json(path) });
 // Once, at load, and not polled: all this does is put a dot on the Updates tab
 // so somebody finds out there is a new release without having gone looking.

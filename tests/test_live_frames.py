@@ -118,7 +118,7 @@ try:
           (function tick(now) {
             window.__gaps.push(now - last);
             last = now;
-            if (window.__gaps.length % 30 === 0) {
+              if (window.__gaps.length % 30 === 0) {
               window.__sizes.push(document.getElementById('transcript').children.length);
             }
             if (window.__watching) requestAnimationFrame(tick);
@@ -196,7 +196,6 @@ def streamed() -> dict:
             pytest.skip('no usable browser')
         raise AssertionError(f'the measurement failed:\n{result.stdout}\n{result.stderr}')
     got = json.loads(result.stdout.strip().splitlines()[-1])
-    print('MEASURED:', json.dumps(got))
     if not got.get('ok'):
         pytest.skip(f'the turn did not run: {got}')
     if got.get('frames', 0) < 40:

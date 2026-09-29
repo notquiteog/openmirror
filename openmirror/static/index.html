@@ -30,6 +30,7 @@
   <symbol id="i-plug" viewBox="0 0 16 16"><path d="M6 2v4"/><path d="M10 2v4"/><path d="M4 6h8v2.5A4 4 0 0 1 8 12.5 4 4 0 0 1 4 8.5z"/><path d="M8 12.5V14.5"/></symbol>
   <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1"/></symbol>
   <symbol id="i-mail" viewBox="0 0 16 16"><rect x="1.5" y="3.5" width="13" height="9" rx="1.2"/><path d="m1.8 4.4 6.2 4.4 6.2-4.4"/></symbol>
+  <symbol id="i-list" viewBox="0 0 16 16"><path d="M5 4h9M5 8h9M5 12h9"/><path d="M2 4h.01M2 8h.01M2 12h.01"/></symbol>
   <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 13V3"/><path d="m3.5 7.5 4.5-4.5 4.5 4.5"/></symbol>
   <symbol id="i-git" viewBox="0 0 16 16"><circle cx="4.5" cy="3.5" r="1.8"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="8" r="1.8"/><path d="M4.5 5.3v5.4"/><path d="M4.5 8h5.2"/></symbol>
 </svg>
@@ -78,6 +79,13 @@
     </button>
     <button class="nav-row" id="nav-rewind" disabled>
       <svg class="ic"><use href="#i-undo"></use></svg><span>Rewind</span>
+    </button>
+    <!-- Review is a different act from Rewind: rewind throws a whole turn away,
+         review keeps the parts you agree with. Separate buttons because they
+         are separate decisions, and a panel where the two sit together is a
+         panel where the wrong one gets pressed. -->
+    <button class="nav-row" id="nav-review" hidden>
+      <svg class="ic"><use href="#i-list"></use></svg><span>Review changes</span>
     </button>
     <button class="nav-row" id="open-memory" hidden>
       <svg class="ic"><use href="#i-memory"></use></svg><span>Memory</span>
@@ -477,6 +485,26 @@
     </div>
   </section>
 </main>
+
+<dialog id="review-dialog">
+  <form method="dialog">
+    <h2>Review this turn's changes</h2>
+    <p class="explain">
+      Each block is one change. Put back the ones you disagree with and leave the rest — the undo of
+      "the agent changed this and got it right" is not the undo of the turn.
+      Nothing is written until you press the button.
+    </p>
+    <div id="review-body" class="review-body"></div>
+    <p id="review-note" class="meta"></p>
+    <menu>
+      <button id="review-keep-all" type="button" class="ghost small">Keep everything</button>
+      <button id="review-drop-all" type="button" class="ghost small">Put everything back</button>
+      <div class="spacer"></div>
+      <button type="submit" value="close" class="ghost">Close</button>
+      <button id="review-apply" type="button" class="primary">Apply</button>
+    </menu>
+  </form>
+</dialog>
 
 <dialog id="commit-dialog">
   <form method="dialog">
