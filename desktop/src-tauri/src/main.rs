@@ -408,6 +408,123 @@ fn unique(dir: &Path, name: &str) -> PathBuf {
         .expect("some name is free")
 }
 
+/// Install a downloaded update, and restart into it.
+///
+/// The one place this project runs something it fetched, and the shape of it
+/// is forced by three operating systems that disagree about how to replace a
+/// running application:
+///
+/// * **Windows** cannot overwrite a running `.exe` at all — the file is locked
+///   by the process reading it. So the installer is started *and then* the app
+///   quits, and the installer's own "close applications to continue" step
+///   finishes it. Starting it first is the only ordering that works.
+/// * **macOS** cannot move an `.app` bundle that is running, and the bundle
+///   has to be replaced by a privileged move into `/Applications`. `open` on
+///   the disk image is what the person would have done by hand, and it walks
+///   them through it rather than trying to do it for them.
+/// * **Linux** has no single answer. An AppImage is a file, so running the
+///   new one and quitting the old one is the whole job. A `.deb` wants root,
+///   so it is opened with whatever the desktop associates with it and the
+///   person finishes.
+///
+/// The path comes from the daemon, which has already checked it against the
+/// SHA256 published in the same release (see `openmirror/update.py`). This
+/// function does not re-verify and does not need to: it is the same
+/// filesystem and the same minute. It does check that the file is there, is a
+/// regular file, and is inside the staging directory — a path from the web
+/// layer is a path from a browser, and `sh -c` on one of those is the oldest
+/// bug in this shape of program.
+#[tauri::command]
+fn apply_update(app: AppHandle, path: String) -> Result<String, String> {
+    let installer = PathBuf::from(&path);
+
+    if !installer.is_file() {
+        return Err(format!("{path} is not there any more"));
+    }
+    // Reject a symlink: the daemon stages a regular file, so a symlink here
+    // means something replaced it between the check and now.
+    if installer.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        return Err("that is a link, not the download".into());
+    }
+    if !is_executable(&installer) {
+        return Err(format!("{} is not marked runnable", installer.display()));
+    }
+
+    let name = installer.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+    let extension = installer.extension().unwrap_or_default().to_string_lossy().to_lowercase();
+
+    // Started before the quit on every platform, because on Windows the quit
+    // is what releases the lock and on macOS the installer is a separate
+    // process that outlives us either way. `Command::arg` returns `&mut
+    // Command`, so each branch binds then returns rather than chaining.
+    let mut launched = if cfg!(target_os = "windows") {
+        if extension == "msi" {
+            let mut c = std::process::Command::new("msiexec");
+            c.arg("/i").arg(&installer).arg("/qb");
+            c
+        } else {
+            std::process::Command::new(&installer)
+        }
+    } else if cfg!(target_os = "macos") {
+        // A disk image or a bundle, mounted and opened: the person drags it
+        // across, which is the step a script must not do for them.
+        let mut c = std::process::Command::new("open");
+        c.arg(&installer);
+        c
+    } else if extension == "appimage" {
+        // The new build, run directly, after we let go of the old one.
+        std::process::Command::new(&installer)
+    } else {
+        // A .deb or .rpm, opened with whatever the desktop associates with it.
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&installer);
+        c
+    };
+
+    if let Err(e) = launched.spawn() {
+        // Not fatal. The file is on disk and verified; the person can run it,
+        // and saying so beats a window that quits into nothing.
+        let _ = app
+            .notification()
+            .builder()
+            .title("openmirror")
+            .body(format!("Could not start {name}: {e}. It is saved and ready to run."))
+            .show();
+        return Ok(format!("saved, but could not start it: {e}"));
+    }
+
+    if cfg!(target_os = "windows") || extension == "appimage" {
+        // Only these two come back. Everything else is a person finishing
+        // something, and quitting under them would look like a crash.
+        relaunch(&app);
+    }
+    Ok(format!("{name} is running"))
+}
+
+/// Quit and start again. The window is restored by the new process; the
+/// daemon is found again by the usual probe, which is the point of the
+/// "find or start or stop" dance in `daemon.rs`.
+fn relaunch(app: &AppHandle) {
+    if let Ok(program) = std::env::current_exe() {
+        let _ = std::process::Command::new(program)
+            .spawn();
+    }
+    app.exit(0);
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    true
+}
+
 #[tauri::command]
 fn status(shell: State<'_, Shell>) -> Status {
     shell.status.lock().map(|s| s.clone()).unwrap_or_else(|e| e.into_inner().clone())
@@ -439,7 +556,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| raise(app)))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![status, retry, open_logs])
+        .invoke_handler(tauri::generate_handler![status, retry, open_logs, apply_update])
         .setup(|app| {
             let home = Home::new(app.path().home_dir()?);
             std::fs::create_dir_all(home.logs())?;
@@ -591,6 +708,34 @@ mod tests {
         assert!(!here("https://github.com/notquiteog/openmirror"));
         assert!(!here("file:///etc/passwd"));
         assert!(!here("data:text/html,<h1>hi</h1>"));
+    }
+
+    #[test]
+    fn an_update_path_is_refused_before_anything_is_run() {
+        /* The path arrives from the web layer, which means from a browser. A
+           command built out of one of those is the oldest bug in this shape of
+           program, so the refusals are here to be read rather than trusted. */
+        let missing = std::path::Path::new("/definitely/not/here.AppImage");
+        assert!(!missing.is_file(), "the test is only meaningful if it is absent");
+
+        // A symlink is refused even though `is_file` follows it and says yes:
+        // the daemon stages a regular file, so a link here means something
+        // replaced it between the checksum and now.
+        let dir = std::env::temp_dir().join("openmirror-update-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("real.bin");
+        let link = dir.join("link.bin");
+        std::fs::write(&real, b"x").unwrap();
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(link.is_file(), "a link to a file is still a file, which is the trap");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        }
+        let _ = std::fs::remove_file(&real);
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
