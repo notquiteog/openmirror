@@ -102,6 +102,13 @@
       <span>Providers</span><span class="chev">›</span>
     </button>
     <div id="providers" aria-label="Providers" hidden></div>
+    <!-- Worktree and Hooks sit together at the bottom rather than up in the
+         rail: both are things you do *to a project*, not to a conversation,
+         and a fourth row up there pushes the session list off the bottom of a
+         short sidebar. -->
+    <button class="nav-row" id="worktree-open" hidden>
+      <svg class="ic"><use href="#i-git"></use></svg><span>Worktree</span>
+    </button>
     <button class="nav-row" id="hooks-open">
       <svg class="ic"><use href="#i-list"></use></svg><span>Hooks</span>
     </button>
@@ -493,6 +500,25 @@
     </div>
   </section>
 </main>
+
+<dialog id="worktree-dialog">
+  <form method="dialog">
+    <h2>Worktrees</h2>
+    <p class="explain">
+      A second checkout of this repository, on its own branch, that a session works in — so a turn
+      cannot touch the tree you have open. The branch is there afterwards to merge, look at, or
+      throw away.
+    </p>
+    <div id="worktree-body" class="worktree-body"></div>
+    <p id="worktree-note" class="meta"></p>
+    <menu>
+      <input id="worktree-label" placeholder="name it, or leave blank" autocomplete="off">
+      <div class="spacer"></div>
+      <button type="submit" value="close" class="ghost" id="worktree-close">Close</button>
+      <button type="button" class="primary" id="worktree-make">New worktree</button>
+    </menu>
+  </form>
+</dialog>
 
 <dialog id="hooks-dialog">
   <form method="dialog">

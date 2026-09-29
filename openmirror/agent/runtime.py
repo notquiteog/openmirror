@@ -150,7 +150,7 @@ def _default_store() -> Any:
             from openmirror.config import config
             from openmirror.sessions import SessionStore
 
-            _STORE = SessionStore(Path(config.data_dir) / 'sessions')
+            _STORE = SessionStore(config.sessions_dir)
         except Exception:  # noqa: BLE001
             log.exception('no transcript store; conversations will not be saved')
             _STORE = None

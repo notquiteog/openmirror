@@ -123,7 +123,7 @@ KNOWN = {
     'perch_scheme', 'openwebui_url', 'openwebui_key', 'chat_provider', 'embed_provider',
     'embed_dimensions', 'stt_provider', 'tts_provider', 'image_provider', 'image_model', 'video_provider',
     'video_model', 'default_chat_model', 'default_stt_model', 'default_tts_model', 'default_tts_voice',
-    'local_only', 'extra_dirs', 'memory_enabled', 'data_dir', 'connections_db', 'memory_db', 'embed_model',
+    'local_only', 'extra_dirs', 'worktrees_enabled', 'sessions_dir', 'memory_enabled', 'data_dir', 'connections_db', 'memory_db', 'embed_model',
     'default_user', 'log_level', 'exit_with_stdin',
     # Not `Config` fields, and deliberately: `toolset` narrows a session and
     # `provider` picks a connection for one request. Both are accepted here so

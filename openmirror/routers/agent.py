@@ -319,6 +319,107 @@ async def agree_hook(session_id: str, body: HookDecision) -> dict[str, object]:
     return {'ok': True, 'agreed': sorted(session.hooks_agreed)}
 
 
+@http.get('/{session_id}/worktrees')
+async def list_worktrees(session_id: str) -> dict[str, object]:
+    """The worktrees on this session's repository, and whether any can be made.
+
+    The "can it" answer comes first and is a sentence rather than a boolean:
+    "this is not a git repository" is what somebody needs, and `false` is not.
+    """
+    from pathlib import Path as _Path
+
+    from openmirror.agent import worktree as wt
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    root = wt.repository_root(session.root)
+    if root is None:
+        return {'available': False, 'why': 'this is not a git repository, so there is no branch to put anywhere',
+                'worktrees': []}
+    # `available()` answers with the *reason* it cannot, so "available" is the
+    # absence of a sentence rather than the presence of a boolean. The first
+    # version said `not await available(...)` and worked, which is exactly why
+    # it was worth rewriting.
+    blocked = await wt.available(root)
+    return {
+        'available': not blocked,
+        'why': blocked,
+        'root': str(root),
+        'worktrees': [{**w.public(), **wt.changes(_Path(w.path))} for w in wt.list_worktrees(root)],
+    }
+
+
+class WorktreeBody(BaseModel):
+    branch: str = ''
+    label: str = ''
+
+
+@http.post('/{session_id}/worktree')
+async def make_worktree(session_id: str, body: WorktreeBody) -> dict[str, object]:
+    """A worktree, on a new branch, and a session opened in it.
+
+    Opt-in twice over, deliberately: only a git repository, and only when the
+    operator has said worktrees may be used. A branch somebody did not ask for
+    is a branch somebody has to clean up.
+
+    The new session is confined to the worktree, so a turn in it cannot reach
+    the working tree this one was opened in — which is the entire point and
+    the reason this is not just `unconfined`.
+    """
+    from openmirror.agent import worktree as wt
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    if not config.worktrees_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail='worktrees are off on this install (OPENMIRROR_WORKTREES=1 to allow them)',
+        )
+    root = wt.repository_root(session.root)
+    if root is None:
+        raise HTTPException(status_code=409, detail='this is not a git repository, so there is no branch to put anywhere')
+    try:
+        made = wt.create(root, branch=body.branch, label=body.label)
+    except wt.WorktreeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    impl, model, _info = await _resolve_chat(None, None)
+    opened = await manager.create(
+        root=made.path, provider=impl, model=model, mode=session.policy.mode,
+        title=f'{session.title or "worktree"} · {made.branch.rsplit("/", 1)[-1]}',
+    )
+    return {'worktree': made.public(), 'session': {'id': opened.id, 'root': str(opened.root),
+                                                 'title': opened.title, 'branch': made.branch}}
+
+
+@http.delete('/{session_id}/worktree')
+async def drop_worktree(session_id: str, path: str = '') -> dict[str, object]:
+    """Take a worktree away — and not if it has anything in it.
+
+    `git worktree remove` refuses too, and that refusal is the reason this is
+    a route rather than a cleanup script: a worktree with a day of work in it
+    is not a directory anybody should lose to a tidy-up. `--force` is
+    deliberately not offered.
+    """
+    from openmirror.agent import worktree as wt
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail='no such session')
+    if not path:
+        raise HTTPException(status_code=400, detail='path is required')
+    root = wt.repository_root(session.root)
+    if root is None:
+        raise HTTPException(status_code=409, detail='not a git repository')
+    try:
+        wt.remove(root, path)
+    except wt.WorktreeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {'ok': True}
+
+
 @http.get('/settings')
 async def read_settings(root: str = '') -> dict[str, object]:
     """Which settings files applied to a project, what they said, and what

@@ -204,7 +204,8 @@ page — [docs/MAIL.md](docs/MAIL.md) — because why IMAP rather than a vendor
 API, and what `threadId` is worth, do not fit in a paragraph. Hooks have
 [docs/HOOKS.md](docs/HOOKS.md), where the property that makes running a
 project's code defensible is written out in full. Leave has
-[docs/LEAVE.md](docs/LEAVE.md) — mostly about when the assessment
+[docs/SESSIONS.md](docs/SESSIONS.md) covers what is still here tomorrow.
+[docs/LEAVE.md](docs/LEAVE.md) is mostly about when the assessment
 *declines* to answer — which is the part that matters.
 
 **The web, and a real browser.** `web_search` and `web_fetch` for reading,
@@ -425,6 +426,33 @@ model that will refuse the request is worse than no bar. It fills towards the
 point the conversation gets *summarised*, which is the number that decides
 whether to keep going. There is no cost in dollars: a price is out of date the
 moment a provider changes one, and somebody reads a stale number as a bill.
+
+**Your conversations survive a restart.** Every turn is written to
+`data/sessions/`, and `GET /api/sessions/stored` lists what is there. A
+session is reopened by *rebuilding* it — tools, provider and policy as they
+would have been for the first time — and putting the stored messages back, so
+a transcript is a record rather than a re-execution. What is lost is said
+rather than hidden: a turn that was running when the daemon stopped comes back
+to *just before* it, because a transcript does not contain a Future and the
+alternative is a model believing a half-finished turn completed.
+`GET /api/sessions/{id}/export` gives you the conversation as Markdown, with
+the tool calls kept — "the agent ran a command and here is the conversation
+without it" is a document that misleads.
+
+**A settings file, and one rule about it.** `.openmirror/settings.json`,
+`.openmirror.json` and `.claude/settings.json` are all read, because being
+told to rename a file is how a feature goes unused. And *a project may narrow
+permissions and never widen them*: the approval mode can only go down the
+ladder, `allow_*` can only go off, `local_only` can only go on. A repository
+that ships a settings file is a repository you opened, and letting it raise
+its own safety settings would be the same hole the hooks have, one layer up.
+
+**A worktree per job.** `OPENMIRROR_WORKTREES=1` and a session can be put in a
+second checkout of the repository, on its own branch, where it cannot reach
+the tree you have open. That is the middle ground `unconfined` is not: a flag
+that opens the whole disk means somebody who needs to read one directory next
+door either leaves it on and stays scared, or does without. Removal is
+refused while a worktree has changes in it, and `--force` is not offered.
 
 **Leave, and what your own record says about it.** A local ledger of requests
 and the decisions on them, and an `assess` action that gathers the evidence

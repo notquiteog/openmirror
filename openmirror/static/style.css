@@ -1678,6 +1678,21 @@ button.ghost.danger:hover { border-color: var(--danger); }
 .ctx-bar > span.warn { background: var(--warn, #c9a227); }
 .ctx-bar > span.full { background: var(--danger, #d05a4e); }
 
+/* --- worktrees -------------------------------------------------------------- */
+
+.worktree-body { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.wt-row {
+  display: flex; flex-direction: column; gap: 3px;
+  border: 1px solid var(--edge-soft); border-radius: 9px; padding: 8px 11px;
+}
+.wt-head { display: flex; align-items: baseline; gap: 8px; }
+.wt-branch { flex: 1; min-width: 0; font-size: 12.5px; color: var(--ink);
+  font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-state { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.wt-path { font-family: var(--mono); font-size: 11px; color: var(--faint);
+  overflow-x: auto; white-space: pre; }
+#worktree-label { flex: 1; max-width: 260px; }
+
 /* --- hooks ---------------------------------------------------------------- */
 
 /* The consent strip. Above the transcript and below the header, so it is

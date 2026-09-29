@@ -33,6 +33,7 @@ const state = {
   lastFetched: '',
   sessionId: () => null,
   request: null,
+  request: null,
 };
 
 /* The one keydown handler, asked about this list first.
@@ -80,6 +81,12 @@ export function handleFileKey(event) {
   return false;
 }
 
+/* A *function* returning the id, handed in by `wireFiles`. Interpolating it
+   instead of calling it puts `() => state.sessionId` in the URL — a 404 that
+   reads as a missing route, which is how it went unnoticed until a browser
+   test watched the network. */
+const currentSession = () => (state.sessionId ? state.sessionId() : null);
+
 export function wireFiles({ sessionId, request }) {
   state.sessionId = sessionId;
   state.request = request;
@@ -126,7 +133,7 @@ function queryAt() {
 }
 
 async function fetchFiles(query, ticket) {
-  const id = state.sessionId();
+  const id = currentSession();
   if (!id || !state.request) return;
   try {
     const data = await state.request(`/api/sessions/${encodeURIComponent(id)}/files?q=${encodeURIComponent(query)}`);

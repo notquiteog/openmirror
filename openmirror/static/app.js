@@ -29,6 +29,7 @@ import { openStudio, stopPolling, wireStudio } from './studio.js';
 import { startTalking, stopTalking, talking, wireTalk } from './talk.js';
 import { renderContext, refreshContext, wireContext } from './context.js';
 import { onHookApproval, resetHooks, wireHooks } from './hooks.js';
+import { refreshWorktrees, wireWorktrees } from './worktree.js';
 import { refreshReview, resetReview, wireReview } from './review.js';
 import { renderUpdate, watchUpdates, wireUpdates } from './updates.js';
 import { Voice } from './voice.js';
@@ -708,7 +709,7 @@ function changedCard() {
    to the middle of a session is exactly what the checkpoint code refuses to
    do, because it would leave a state that never existed. */
 async function undoLast(button) {
-  const res = await api(`/api/sessions/${state.sessionId}/checkpoints`);
+  const res = await api(`/api/sessions/${currentSession()}/checkpoints`);
   if (!res || !res.ok) return;
   const { enabled, checkpoints } = await res.json();
   if (!enabled || !checkpoints.length) {
@@ -1361,7 +1362,7 @@ onReachable((ok) => {
 async function loadRewind() {
   const list = $('#rewind-list');
   list.textContent = '';
-  const res = await api(`/api/sessions/${state.sessionId}/checkpoints`);
+  const res = await api(`/api/sessions/${currentSession()}/checkpoints`);
   if (!res || !res.ok) return;
   const { enabled, checkpoints } = await res.json();
   if (!enabled) return;
@@ -1395,7 +1396,7 @@ async function loadRewind() {
 /* Shared by the Rewind dialog and by the Undo button on a turn's receipt:
    both throw the same work away, so both had better report it the same way. */
 async function restore(checkpointId) {
-  const r = await api(`/api/sessions/${state.sessionId}/restore`, {
+  const r = await api(`/api/sessions/${currentSession()}/restore`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ checkpoint: checkpointId }),
@@ -1995,12 +1996,13 @@ function selectSession(id) {
   resetFiles();
   resetReview();
   resetHooks();
+  refreshWorktrees();
   loadCommands(id);
   rememberSession(id);
   // A reattached session has the transcript but never saw the turn that
   // produced it, so the meter is empty until it asks. Deliberately after the
   // id is set, so the request is about the session being shown.
-  refreshContext(id);
+  refreshContext(sessionId);
   // And the review button has to be re-asked about too. `resetReview` above
   // hides it because the old session's hunks are not this one's — and a
   // button that stays hidden after switching to a session with changes is a
@@ -2279,6 +2281,7 @@ wireRewind();
 wireTheOneButton();
 
 const sessionId = () => state.sessionId;
+const currentSession = () => (state.sessionId ? state.sessionId() : null);
 wireTalk({ sessionId });
 wireLive({ sessionId });
 wireWatch({
@@ -2294,6 +2297,8 @@ wireCommit();
 wireContext();
 wireReview({ sessionId });
 wireHooks({ sessionId });
+wireWorktrees({ sessionId });
+refreshWorktrees();
 wireFiles({ sessionId, request: (path) => json(path) });
 // Once, at load, and not polled: all this does is put a dot on the Updates tab
 // so somebody finds out there is a new release without having gone looking.

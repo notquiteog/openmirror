@@ -176,3 +176,73 @@ def test_the_new_panes_are_reachable_from_the_entry_point():
 
     reached = dict(json.loads(result.stdout.strip().splitlines()[-1]))
     assert reached == {'mail.js': True, 'commit.js': True}
+
+
+def test_no_module_interpolates_the_session_id_function():
+    """The bug, three times, in three different modules.
+
+    `sessionId` is passed in as a *function* — `() => state.sessionId`, the
+    shape `wireTalk` and `wireLive` have always taken. Storing that function
+    and interpolating it puts its own source text in the URL:
+
+        GET /api/sessions/()%20=%3E%20state.sessionId/worktrees
+
+    which is a 404 that reads as a missing route, and the feature looks
+    switched off. `review.js` and `hooks.js` both had it, and the only reason
+    it was caught was driving the page in a browser and watching the network.
+
+    So it is a rule rather than a habit: a module that is handed the session
+    id has to call it, and this says so about every module at once.
+    """
+    offenders: list[str] = []
+    for path in sorted(STATIC.rglob('*.js')):
+        text = path.read_text()
+        if 'sessionId' not in text:
+            continue
+        # A module that *defines* a currentSession() helper is doing the right
+        # thing; one that interpolates the raw field is not.
+        if 'const currentSession' in text and '${state.sessionId}' not in text:
+            continue
+        if '${state.sessionId}' in text:
+            offenders.append(f'{path.name}: interpolates state.sessionId')
+    assert not offenders, (
+        'these interpolate the session-id *function* rather than calling it:\\n  ' + '\\n  '.join(offenders)
+    )
+
+
+def test_every_module_handed_the_session_id_calls_it_before_using_it():
+    """The same rule from the other end: anything that builds a `/api/sessions/`
+    URL needs a way to get the id, and the only correct way is a call."""
+    for path in sorted(STATIC.rglob('*.js')):
+        text = path.read_text()
+        if '/api/sessions/${' not in text:
+            continue
+        assert 'currentSession(' in text, (
+            f'{path.name} builds a session URL with no way to get the id'
+        )
+
+
+def test_every_module_handed_the_session_id_is_handed_the_function():
+    """The other half of the rule, and the one that bit: `selectSession(id)`
+    has a *string* in scope and the modules want a *function*.
+
+    Calling `refreshContext(id)` looks completely right at the call site and
+    fails at run time with `fn is not a function` — and because
+    `wireReview({ sessionId })` is right and `refreshContext(id)` is wrong in
+    the same file, a file that gets it right once gets it wrong the next time.
+    """
+    app = (STATIC / 'app.js').read_text()
+    select = app[app.index('function selectSession('):]
+    select = select[:select.index('\n}\n')]
+    assert 'refreshContext(sessionId)' in select, 'refreshContext wants the function, not the id'
+    for other in ('refreshWorktrees(', 'resetReview()', 'resetFiles()', 'resetHooks()'):
+        assert other in select, f'{other} is not called on a session change'
+
+
+def test_the_context_meter_survives_a_session_change():
+    """It is fetched per session and drawn from the answer, so a stale value
+    is a meter describing the session you just left."""
+    app = (STATIC / 'app.js').read_text()
+    assert 'if (ev.context) renderContext(ev.context);' in app, 'the turn event draws it'
+    select = app[app.index('function selectSession('):]
+    assert 'refreshContext(sessionId)' in select, 'and a switch re-asks'

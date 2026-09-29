@@ -240,3 +240,30 @@ There is nothing to click because there is nothing to click. The ledger is
 behind the model, which is the point — see [LEAVE.md](LEAVE.md) for why the
 assessment answers with evidence and a band rather than a verdict, and for
 when it declines to answer at all.
+
+## Sessions that outlive the daemon, worktrees, and settings
+
+Three things that are not modes, and are worth a paragraph each because each
+answers "what happens when…".
+
+**A restart.** Every turn is written to `data/sessions/`, and the stored
+conversations are listed separately from the live ones — after a restart the
+live list is empty and the stored list is everything. Reopening rebuilds the
+session and replays the messages into it. What it does not restore is the live
+state of a turn that was running: an in-flight tool call, a suspended
+approval, the queue. A transcript does not contain a Future, so a session
+interrupted mid-turn comes back to *just before* it with a note saying so.
+
+**A worktree.** A second checkout of the repository, on its own branch, that
+a session works in. The point is not safety — a worktree shares the repository's
+history and its remotes, so a force push in one is the same force push. The
+point is that a turn in it cannot touch the tree you have open, which is the
+kind of damage that actually happens. `unconfined` answers the same problem
+with a flag that opens the whole disk, and a flag that opens everything is
+either left on and feared or turned off and needed.
+
+**A settings file.** Every knob was an environment variable, which is right for
+a container and wrong for a laptop. Three filenames are read, and a project
+file can lower the safety settings and never raise them — see
+[HOOKS.md](HOOKS.md) for why that rule is the same one, and
+[LEAVE.md](LEAVE.md) for a feature that depends on it being true.

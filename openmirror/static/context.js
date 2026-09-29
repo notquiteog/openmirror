@@ -94,8 +94,16 @@ export function wireContext() {
    Takes the id rather than reading localStorage, because this page has one
    place that knows which session it is on and a second copy of that is how a
    header ends up naming a session the transcript is not from. */
+/* A *function* returning the id, handed in rather than read from storage:
+   this page has one place that knows which session it is on, and a second copy
+   of that is how a panel ends up describing the session you just left.
+   Interpolating the function instead of calling it produces a 404 that reads
+   as a missing route, which is exactly what happened. */
+const currentSession = (fn) => (fn ? fn() : null);
+
 export async function refreshContext(sessionId) {
-  if (!sessionId) return;
-  const info = await json(`/api/sessions/${encodeURIComponent(sessionId)}/context`);
+  const id = currentSession(sessionId);
+  if (!id) return;
+  const info = await json(`/api/sessions/${encodeURIComponent(id)}/context`);
   if (info) renderContext(info);
 }

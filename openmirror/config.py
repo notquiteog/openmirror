@@ -169,6 +169,18 @@ class Config:
         else Path(os.getenv('OPENMIRROR_DATA_DIR', './data')) / 'hr.db'
     )
 
+    # --- worktrees ----------------------------------------------------------
+    # A second checkout of the repository, on its own branch, that a session
+    # works in. Off by default: a branch somebody did not ask for is a branch
+    # somebody has to clean up. See openmirror/agent/worktree.py.
+    worktrees_enabled: bool = field(default_factory=lambda: _bool('OPENMIRROR_WORKTREES'))
+    # Where conversations are written down, so a restart does not lose one.
+    sessions_dir: Path = field(
+        default_factory=lambda: Path(os.getenv('OPENMIRROR_SESSIONS_DIR', ''))
+        if os.getenv('OPENMIRROR_SESSIONS_DIR')
+        else Path(os.getenv('OPENMIRROR_DATA_DIR', './data')) / 'sessions'
+    )
+
     # --- updates ------------------------------------------------------------
     # Ask GitHub whether there is a newer release. On, once a day at most, and
     # the answer is only ever shown — nothing is downloaded without somebody
