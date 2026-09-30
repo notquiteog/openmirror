@@ -177,7 +177,15 @@ def search_sessions(
     # Ranked by how well the query matched, and only then by when the
     # conversation was last touched. Recency first would put a session whose
     # title says nothing about the query above the one that is about it.
-    hits.sort(key=lambda hit: (-hit.score, -hit.updated))
+    #
+    # The id at the end is not decoration. Two transcripts written in the same
+    # filesystem tick have the same `updated`, and two sessions can match a
+    # query equally well, so without a third key the order is whatever the
+    # directory listing happened to give — which is stable on one machine and
+    # not on another, and can reorder between two identical searches. A search
+    # that reshuffles when you retype the same word reads as the answer
+    # changing rather than as two equally good matches.
+    hits.sort(key=lambda hit: (-hit.score, -hit.updated, hit.id))
     out: list[dict[str, Any]] = []
     for hit in hits[:cap]:
         excerpt, spans = _excerpt(hit.text, terms)

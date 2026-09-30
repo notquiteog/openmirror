@@ -86,7 +86,12 @@ jobs:
             | xargs -0 -n1 node --check
 
       - name: Tests
-        run: node --test ide/vscode/test/ ide/vscode/media/
+        # The files, not the directories. `node --test <dir>` discovers test
+        # files differently depending on the Node version, and on Node 22 it
+        # tries to `require` the directory as a module and fails. A glob of the
+        # files themselves is the same command on every version, and a shell
+        # expands it before Node ever sees an argument it might misread.
+        run: node --test ide/vscode/test/*.test.js ide/vscode/media/*.test.js
 
       # The manifest and the code can disagree -- a command in the palette
       # with no handler behind it, a setting nobody reads -- and nothing else

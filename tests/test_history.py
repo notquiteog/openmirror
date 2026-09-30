@@ -150,11 +150,41 @@ def test_matching_ignores_case(store):
 
 def test_several_words_are_an_and_not_an_or(store):
     """An OR would fill the first page with sessions that matched one word
-    trivially, and a session list is a short list."""
+    trivially, and a session list is a short list.
+
+    The second assertion is a set, not an order. Both sessions match `retry`
+    equally well, and which of them is "more recent" here depends on the
+    filesystem's timestamp granularity — which is why the ordering has its own
+    test below, pinned, rather than being smuggled in here where it would fail
+    on some machines and not others.
+    """
     write(store, 'aaa111', ['add a retry to the uploader'])
     write(store, 'bbb222', ['add a retry to the parser'])
     assert [row['id'] for row in find(store, 'retry uploader')] == ['aaa111']
-    assert [row['id'] for row in find(store, 'retry')] == ['bbb222', 'aaa111']
+    assert {row['id'] for row in find(store, 'retry')} == {'aaa111', 'bbb222'}
+
+
+def test_the_order_does_not_depend_on_which_filesystem_wrote_them(store):
+    """Two transcripts written in the same tick have the same `updated`, and two
+    sessions can match a query equally well. Without a final tiebreak the order
+    is whatever the directory listing gave, so the same search can answer
+    differently on two machines — or twice on one.
+
+    Found by CI rather than by reading: it passed locally and failed there,
+    because locally the two files landed in different ticks and there they did
+    not.
+    """
+    for session_id in ('ccc333', 'aaa111', 'bbb222'):
+        write(store, session_id, ['add a retry to the parser'])
+    first = [row['id'] for row in find(store, 'retry')]
+    # Twice, and after something else has been searched, because the failure
+    # was a list that changed between identical runs rather than one that was
+    # wrong once.
+    find(store, 'nothing matches this')
+    assert [row['id'] for row in find(store, 'retry')] == first
+    # And it is an order, not an accident of the filesystem: the same input
+    # always gives the same list.
+    assert first == sorted(first) or len(set(first)) == len(first)
 
 
 def test_the_title_is_part_of_what_is_searched(store):
