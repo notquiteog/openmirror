@@ -288,6 +288,45 @@ a server is up, a file the agent writes is shown to it, and any errors it then
 reports are added to that write's result. A server is never started to do
 that: an edit was not graded as running anything.
 
+### Not only questions
+
+Most language servers can also change things, and an agent that can only ask
+will try to hand-edit around a fix the server already knows how to make. Three
+operations do that:
+
+| op | what it does |
+|---|---|
+| `code_action` | the fixes the server offers at a point. With `action`, applies the one you name — by number, or by enough of its title to be unambiguous. |
+| `rename` | renames a symbol everywhere it means, which is the thing a search-and-replace cannot do. |
+| `format` | formats a file, or a line range of one. |
+
+Listing the offered fixes is a read. Applying one is a write. The write path is
+graded so that a *first* call in a language stays `execute` even when it also
+changes files, because `AUTO_EDIT` allows writes and asks about `execute` — and
+grading "start a process and change three files" as a write would make the call
+that also starts something the more permissive of the two.
+
+Two details that are easy to get wrong and are tested here:
+
+**Character offsets are UTF-16.** Every position in the protocol counts
+characters the way a JavaScript string does, not bytes and not code points, so
+an emoji before your cursor shifts the column by two. The implementation encodes
+the line prefix as UTF-16 and decodes from the middle, which also means an
+offset landing between the halves of an astral character clamps to that
+character's boundary rather than raising.
+
+**Edits are applied back to front, and overlapping ones are refused.** Every
+range in a set refers to the document as it was *before* the set arrived, so
+applying them in the order they were sent puts the second one in the wrong
+place. Overlapping spans are refused outright rather than merged, because a
+merge is a guess about which of two intentions was meant.
+
+Every write goes through the session's own path confinement, and a `WorkspaceEdit`
+naming even one file outside the working root is refused whole — half an edit
+applied is a tree that never existed. `CreateFile`, `RenameFile` and
+`DeleteFile` are refused too; there is no reason an agent should be creating
+and removing files through a side channel that skips the checkpoint.
+
 ## Rewind
 
 Every turn that changes a file opens a checkpoint first, so a turn can be
@@ -302,6 +341,12 @@ or the **Rewind** button in the header.
 
 Undoing a turn undoes every turn after it too. Undoing one in the middle would
 produce a tree that never existed and that nobody asked for.
+
+`/undo` and `/redo` in the conversation walk the same history one step at a
+time, and they are a pair: a redo returns the after-content, and a turn that
+has been redone is undoable again. A new edit clears the redo stack, because a
+redo that reached past a later edit would put back a tree built on top of
+changes that are no longer there.
 
 Snapshots are content-addressed, so a session that edits one file thirty times
 stores thirty hashes and a handful of blobs. They live under the data

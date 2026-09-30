@@ -59,6 +59,34 @@ for you. For now the browser tools want a daemon installed as below, with
 How the app finds, starts and stops its daemon is in
 [desktop/README.md](../desktop/README.md).
 
+## The VS Code extension
+
+Every release also carries `openmirror.vsix` — the agent in a panel beside your
+editor, with streaming output, approvals, `/commands`, `@file` mentions and
+pasted images.
+
+It is a **client**, like `openmirror chat` and like the browser: it starts no
+daemon, spawns no agent, and keeps nothing once you close the panel. So it
+needs one running — the desktop app, or `openmirror serve` in a terminal — and
+if there is not one it says so and names the command, rather than quietly
+starting one where you cannot see it.
+
+```bash
+code --install-extension openmirror.vsix
+```
+
+Settings live under `openmirror.` — `host`, `port`, `token`, `model`,
+`provider`, `mode`, `effort`, `root` — and each falls back to its
+`OPENMIRROR_*` environment variable, so an install that already works from a
+terminal needs no configuration here. The token is only needed when the daemon
+was started with `OPENMIRROR_TOKEN`.
+
+The extension has **no dependencies and no build step**, which is why
+`src/ws.js` exists: Node only grew a global `WebSocket` in v21, and the
+extension host runs whatever Node your editor shipped. The whole thing is
+tested with `node --test` and needs no `npm install` to build, check or
+package. See [ide/vscode/README.md](../ide/vscode/README.md).
+
 ## Installing the daemon
 
 For a machine with no screen, or for what the app does not carry. Python

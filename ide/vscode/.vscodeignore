@@ -1,0 +1,54 @@
+# What does not go into the .vsix
+
+The extension is five files' worth of shipping: `package.json`,
+`src/extension.js`, `src/host.js`, `src/ws.js` and `media/**`. Everything below
+is either a development-time file or something the editor does not need.
+
+There is no `node_modules/` to exclude and there never will be one: the
+manifest declares no `dependencies` and no `devDependencies`, which is the whole
+reason `src/ws.js` exists. The line is here anyway, because the day somebody
+runs `npm install` for a convenience nobody needed, this is the file that keeps
+their node_modules out of a signed artifact.
+
+```
+# Development-time only. The tests run in a checkout, not in the editor.
+test/**
+**/*.test.js
+node_modules/**
+**/package-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+scripts/
+.gitignore
+.gitattributes
+.github/**
+.vscode/**
+**/.vscode/**
+**/tsconfig*.json
+**/.eslintrc*
+**/.editorconfig
+
+# Editor and OS noise.
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*~
+
+# Never ship a built artifact inside a built artifact.
+*.vsix
+*.tgz
+
+# Sources that end up in a sourcemap anyway, and are the wrong version if they
+# do not.
+**/*.map
+```
+
+## Deliberately kept
+
+- `src/host.js`, `src/ws.js` and `src/extension.js`. These are the extension.
+- `media/**`. This is the webview, and without it the panel has nothing to
+  render.
+- `PROTOCOL.md`. The contract between the webview and the bridge, in three
+  hundred lines, for the benefit of whoever changes one of the three and wants
+  to know what they are not allowed to break.
+- `README.md` and `CHANGELOG.md`, which the marketplace shows.

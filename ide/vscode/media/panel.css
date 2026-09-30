@@ -1,0 +1,1028 @@
+/* The panel's stylesheet.
+ *
+ * There are no colours in this file.
+ *
+ * That is the whole of the visual decision, and it is a decision rather than an
+ * omission: this panel is rendered inside somebody's editor, next to code they
+ * are reading, in a theme they chose -- light, dark, or one of the
+ * high-contrast ones. A stylesheet that carries its own palette is a panel that
+ * is a slightly wrong colour against everything around it in every theme, and a
+ * visibly wrong colour against itself in high contrast, where the point is that
+ * nothing is a guess. So every value below is a `--vscode-*` variable, which
+ * VS Code injects into the page, and there is no fallback: a fallback is a
+ * hardcoded colour wearing a disguise, and the one time it would be used is the
+ * one time a theme had failed to define something.
+ *
+ * The two that carry the most weight:
+ *
+ *   --vscode-editor-background      the ground, so the panel matches the editor
+ *   --vscode-editorWidget-background the menus, so they match everything else
+ *
+ * The shapes are the ones `openmirror/static/` uses, at a size that fits 300px.
+ * No animation anywhere is longer than 150ms, and the one animation there is
+ * gone entirely under `prefers-reduced-motion`.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  font-weight: var(--vscode-font-weight);
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+button,
+select,
+input,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.meta {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+/* ------------------------------------------------------------------- the bar */
+
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  flex: 0 0 auto;
+}
+
+.title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+#policy {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The link. Colour is never the only carrier: the word is in it, which is what
+ * a screen reader and a colour-blind reader both get. */
+.pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 9px;
+  padding: 0 7px;
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+.pill.on {
+  color: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+  border-color: currentColor;
+}
+
+.pill.connecting,
+.pill.retrying {
+  color: var(--vscode-editorWarning-foreground);
+  border-color: var(--vscode-editorWidget-border);
+}
+
+.pill.failed {
+  color: var(--vscode-errorForeground);
+  border-color: var(--vscode-errorForeground);
+}
+
+/* ------------------------------------------------------------- the hook strip */
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--vscode-textBlockQuote-background);
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  font-size: 0.9em;
+}
+
+.hook-command {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-textPreformat-foreground);
+  word-break: break-all;
+}
+
+/* The two answers to a hook, and the order they are in. Refusal is first in
+   the DOM as well as on the left, so the keyboard's first stop is the answer
+   that does not run anything. */
+.hook.yes, .hook.no {
+  font: inherit;
+  font-size: 0.9em;
+  padding: 2px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid var(--vscode-button-secondaryBackground, transparent);
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, inherit);
+}
+.hook.yes:hover { background: var(--vscode-button-secondaryHoverBackground, inherit); }
+.hook.no {
+  border-color: var(--vscode-inputValidation-errorBorder, transparent);
+  color: var(--vscode-inputValidation-errorForeground, inherit);
+}
+
+.retry {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 0.9em;
+  padding: 3px 11px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: var(--vscode-button-background, transparent);
+  color: var(--vscode-button-foreground, inherit);
+}
+.retry:hover { background: var(--vscode-button-hoverBackground, inherit); }
+.retry:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- transcript */
+
+#transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+/* An empty panel is a different window: what it is, and how to start it. */
+body.blank #transcript {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+#hero {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 34ch;
+}
+
+#hero-ask {
+  margin: 0;
+  font-size: 1.15em;
+}
+
+#hero-sub,
+#hero-why {
+  margin: 0;
+}
+
+#hero-why {
+  color: var(--vscode-errorForeground);
+}
+
+.turn.user .body {
+  background: var(--vscode-textBlockQuote-background);
+  border-left: 2px solid var(--vscode-textBlockQuote-border, var(--vscode-editorWidget-border));
+  padding: 4px 8px;
+  border-radius: 0 3px 3px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn.assistant .body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Reasoning. Folded by default, because in a panel it is the longest text in
+ * the transcript and the least often re-read. */
+.thinking {
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.thinking > summary {
+  cursor: pointer;
+}
+
+/* A one-line note: an error, a receipt, something held. */
+.note {
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+  border-left: 2px solid var(--vscode-editorWidget-border);
+  padding-left: 6px;
+  overflow-wrap: anywhere;
+}
+
+.note.error {
+  color: var(--vscode-errorForeground);
+  border-color: var(--vscode-errorForeground);
+}
+
+.note.warn {
+  color: var(--vscode-editorWarning-foreground);
+  border-color: var(--vscode-editorWarning-foreground);
+}
+
+.note.unknown {
+  /* An event this build has never heard of. Deliberately not an error: it is
+   * information, and it says what it is. */
+  color: var(--vscode-editorInfo-foreground);
+  border-color: var(--vscode-editorInfo-foreground);
+  font-style: italic;
+}
+
+/* --------------------------------------------------------------- tool cards */
+
+/* One line per call, and the output is not in the DOM until it is opened. A
+ * panel that fills with tool output is a panel that is unusable within two
+ * turns, and this is the decision that keeps it a conversation. */
+.tool {
+  border: 1px solid transparent;
+  border-left: 2px solid var(--vscode-editorWidget-border);
+  border-radius: 0 3px 3px 0;
+}
+
+.tool.open,
+.tool.failed,
+.tool.denied {
+  border-color: var(--vscode-editorWidget-border);
+  background: var(--vscode-editorWidget-background);
+}
+
+.tool.failed {
+  border-left-color: var(--vscode-editorError-foreground);
+}
+
+.tool.denied {
+  border-left-color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
+.tool.live {
+  border-left-color: var(--vscode-editorInfo-foreground);
+}
+
+.tool.stderr {
+  border-left-color: var(--vscode-editorWarning-foreground);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.head:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.verb {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* A tool this build has never heard of, shown as its own name. Monospace,
+ * because it is exactly that: a name, not a phrase. */
+.name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.sum {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+}
+
+.tail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.risk {
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.tool.failed .risk,
+.tool.denied .risk {
+  color: var(--vscode-errorForeground);
+  border-color: currentColor;
+}
+
+.chev {
+  transition: transform 120ms ease-out;
+}
+
+.tool.open .chev {
+  transform: rotate(90deg);
+}
+
+.body {
+  padding: 2px 6px 6px;
+  font-size: 0.9em;
+}
+
+.out {
+  margin: 4px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+
+.out.err {
+  color: var(--vscode-errorForeground);
+}
+
+.diff {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  white-space: pre;
+}
+
+.diff .add {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-charts-green));
+}
+
+.diff .del {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-charts-red));
+}
+
+.diff .hunk {
+  color: var(--vscode-descriptionForeground);
+}
+
+.shot img {
+  max-width: 100%;
+  height: auto;
+  margin-top: 4px;
+  border: 1px solid var(--vscode-editorWidget-border);
+}
+
+.agent-log {
+  border-top: 1px dashed var(--vscode-editorWidget-border);
+  margin-top: 4px;
+  padding-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-log .said {
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ approval */
+
+/* Deny first, in the tab order and in the markup, because a mis-click on a panel
+ * that is about to run a shell command should cost nothing. The buttons are not
+ * disabled after a click: the host queues a frame when the socket is full, so a
+ * second click would be a second answer. The bar is removed instead. */
+.decide {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  background: var(--vscode-inputValidation-warningBackground);
+}
+
+.decide .why {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.decide .risk-line {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.decide .acts {
+  display: flex;
+  gap: 6px;
+}
+
+.remember {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ----------------------------------------------------------------- questions */
+
+.question {
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-left: 2px solid var(--vscode-editorInfo-foreground);
+  border-radius: 0 3px 3px 0;
+  padding: 6px;
+  background: var(--vscode-editorWidget-background);
+}
+
+.question .q {
+  font-weight: 600;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+form.answer {
+  display: flex;
+  gap: 4px;
+}
+
+form.answer input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
+form.answer input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+/* --------------------------------------------------------------------- to-do */
+
+.todos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 6px;
+  font-size: 0.85em;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.todos-head {
+  font-weight: 600;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todos-count {
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ------------------------------------------------------------------- buttons */
+
+.btn {
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn.small {
+  padding: 1px 7px;
+  font-size: 0.85em;
+}
+
+.btn.allow {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.btn.allow:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.btn.deny {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.btn.deny:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn.ghost {
+  background: none;
+  border-color: var(--vscode-button-border, var(--vscode-editorWidget-border));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+
+.btn.ghost:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon {
+  background: none;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.icon:hover {
+  color: var(--vscode-foreground);
+}
+
+/* ------------------------------------------------------------------ composer */
+
+#composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--vscode-editorWidget-border);
+  padding: 6px 8px 4px;
+  gap: 4px;
+}
+
+#field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: 4px;
+  padding: 4px;
+}
+
+#field:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+
+/* A drop is taken by the whole field, not the textarea, or the file's *name*
+ * lands in the text. The highlight says so before the drop, not after. */
+#field.dropping {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-hoverBackground);
+}
+
+#input {
+  width: 100%;
+  min-height: 20px;
+  max-height: 120px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--vscode-input-foreground);
+  line-height: 1.4;
+  padding: 1px 2px;
+}
+
+#input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.chip.flat {
+  padding: 0 3px;
+}
+
+.chip select {
+  background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background));
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-editorWidget-border));
+  border-radius: 3px;
+  font-size: 0.95em;
+  padding: 0 2px;
+  max-width: 11em;
+}
+
+/* A turn is running. The bar, not a spinner over the transcript: a spinner
+ * hides the thing somebody is watching. */
+body.busy #field {
+  border-left: 2px solid var(--vscode-editorInfo-foreground);
+}
+
+#hint {
+  margin: 0;
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- the meter */
+
+#status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+}
+
+#root-chip,
+#model-chip {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: inherit;
+  font-size: 0.95em;
+  padding: 0 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.meter:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.bar {
+  display: inline-block;
+  width: 42px;
+  height: 4px;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  width: 1px;
+  background: var(--vscode-editorInfo-foreground);
+  transition: width 150ms ease-out;
+}
+
+.fill.warn {
+  background: var(--vscode-editorWarning-foreground);
+}
+
+.fill.full {
+  background: var(--vscode-editorError-foreground);
+}
+
+/* ---------------------------------------------------------------- the menus */
+
+/* Above the box, absolutely, so opening a menu does not move the text you were
+ * looking at or push the transcript up. */
+.menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 2px);
+  z-index: 5;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+}
+
+.menu li,
+.file-pick {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.9em;
+  min-width: 0;
+}
+
+.menu li.at,
+.file-pick.at {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.menu .name,
+.file-pick .path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu .desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu li.at .desc {
+  color: inherit;
+}
+
+.menu .hint,
+.menu .kind,
+.file-pick .size {
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.file-pick {
+  width: 100%;
+  background: none;
+  border: 0;
+  text-align: left;
+}
+
+/* --------------------------------------------------------------- the pictures */
+
+#pictures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.attach-error {
+  margin: 0;
+  width: 100%;
+  font-size: 0.85em;
+  color: var(--vscode-errorForeground);
+}
+
+.attach {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 3px;
+  padding: 1px 3px;
+  background: var(--vscode-editorWidget-background);
+}
+
+.attach .thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 2px;
+}
+
+.attach .size {
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ------------------------------------------------------------- the picker */
+
+dialog {
+  width: auto;
+  max-width: 96%;
+  padding: 0;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+}
+
+dialog::backdrop {
+  background: var(--vscode-editorWidget-background);
+  opacity: 0.7;
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  font-weight: 600;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 4px;
+  min-width: 240px;
+}
+
+.session {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 6px;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.session .name {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session .detail {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ---------------------------------------------------------------- to-dos box */
+
+.todos-box {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.9em;
+}
+
+.todos-box li {
+  list-style: none;
+  margin-left: -18px;
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.todos-box .mark {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+}
+
+.todos-box li.done .text {
+  color: var(--vscode-descriptionForeground);
+  text-decoration: line-through;
+}
+
+.todos-box li.doing .mark {
+  color: var(--vscode-editorInfo-foreground);
+}
+
+/* ------------------------------------------------------------ the animations */
+
+/* The only animation in the file, and it is 150ms: a new line arriving should
+ * be noticeable without being a thing that moves. */
+.turn,
+.tool,
+.question,
+.note {
+  animation: arrive 150ms ease-out;
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn,
+  .tool,
+  .question,
+  .note {
+    animation: none;
+  }
+
+  .chev,
+  .fill {
+    transition: none;
+  }
+}
+
+/* High contrast. VS Code's own themes handle the colours; what they cannot do
+ * is add the borders, so a card that is distinguished only by a background gets
+ * a real edge here. */
+@media (forced-colors: active) {
+  .tool,
+  .question,
+  #field,
+  .menu,
+  .banner {
+    border: 1px solid CanvasText;
+  }
+
+  .head,
+  .btn,
+  .session {
+    border: 1px solid ButtonText;
+  }
+}

@@ -19,6 +19,7 @@ on:
   pull_request:
     paths:
       - 'desktop/**'
+      - 'ide/**'
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
@@ -64,6 +65,65 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
           python -m pytest -q
+
+  ide:
+    name: ide extension
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No `npm install`, because there is nothing to install: the extension
+      # has no dependencies and no build step, and `src/ws.js` exists precisely
+      # so that a `package-lock.json` is not needed to run its tests. If a
+      # dependency is ever added, this job is where the `npm ci` goes.
+      - name: Syntax
+        run: |
+          find ide/vscode/src ide/vscode/media -name '*.js' -print0 \
+            | xargs -0 -n1 node --check
+
+      - name: Tests
+        run: node --test ide/vscode/test/ ide/vscode/media/
+
+      # The manifest and the code can disagree -- a command in the palette
+      # with no handler behind it, a setting nobody reads -- and nothing else
+      # in this repository would notice. `test/extension.test.js` walks
+      # package.json in both directions; this is the cheap half, and it fails
+      # the job when the whole thing cannot even be required.
+      - name: The extension activates
+        working-directory: ide/vscode
+        run: node -e "require('./src/extension.js'); console.log('extension.js loads')"
+
+      - name: The manifest is what the marketplace needs
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          d = json.loads(pathlib.Path('ide/vscode/package.json').read_text())
+          want = {'name', 'publisher', 'version', 'engines', 'license', 'description'}
+          missing = want - set(d)
+          if missing:
+              sys.exit(f'the manifest is missing {sorted(missing)}')
+          if d.get('dependencies') or d.get('devDependencies'):
+              sys.exit('the extension is meant to have no dependencies; see src/ws.js')
+          for command in d['contributes']['commands']:
+              if not command.get('category'):
+                  sys.exit(f'command {command["command"]} has no category')
+          print(f'{len(d["contributes"]["commands"])} commands, '
+                f'{len(d["contributes"]["configuration"]["properties"])} settings, no dependencies')
+          PY
+
+      - name: Package
+        working-directory: ide/vscode
+        run: npx --yes @vscode/vsce@3 package --no-dependencies --out openmirror.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ide-extension
+          path: ide/vscode/openmirror.vsix
+          if-no-files-found: error
 
   build:
     name: build (${{ matrix.name }})
@@ -344,7 +404,7 @@ jobs:
   release:
     name: release
     if: github.ref_type == 'tag'
-    needs: [check, test-linux, test-windows, test-macos]
+    needs: [check, ide, test-linux, test-windows, test-macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -358,6 +418,14 @@ jobs:
           pattern: installers-*
           path: out
           merge-multiple: true
+      # The editor extension rides along with the installers, because it is
+      # the same version of the same thing: a tag that shipped a daemon and an
+      # extension built from different trees is a release nobody can file a bug
+      # against.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ide-extension
+          path: out
       - name: Checksums
         working-directory: out
         run: sha256sum -- * | tee SHA256SUMS.txt

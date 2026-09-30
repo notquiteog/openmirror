@@ -1,0 +1,245 @@
+{
+  "name": "openmirror",
+  "displayName": "openmirror",
+  "description": "A panel for a running openmirror daemon, the same client as openmirror chat.",
+  "version": "0.7.0",
+  "publisher": "notquiteog",
+  "license": "Apache-2.0",
+  "galleryBanner": {
+    "color": "#12141a",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/notquiteog/openmirror.git",
+    "directory": "ide/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/notquiteog/openmirror/issues"
+  },
+  "homepage": "https://github.com/notquiteog/openmirror/tree/main/ide/vscode",
+  "engines": {
+    "vscode": "^1.87.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "openmirror",
+    "agent",
+    "ai",
+    "chat",
+    "llm",
+    "anthropic",
+    "openai",
+    "local-first",
+    "daemon"
+  ],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Trusted only: one command runs the openmirror binary, which an untrusted folder may also have."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "A virtual workspace has no working root, and confining the agent to one root is the point."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "openmirror.openPanel",
+        "title": "Open Panel",
+        "category": "openmirror",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "openmirror.newConversation",
+        "title": "New Conversation",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.resumeConversation",
+        "title": "Resume Conversation",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.forkConversation",
+        "title": "Fork Current Conversation",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.showContextReport",
+        "title": "Show the Context Report",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.setApprovalMode",
+        "title": "Set the Approval Mode",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.setThinkingLevel",
+        "title": "Set the Thinking Level",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.setModel",
+        "title": "Set the Model",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.stopTurn",
+        "title": "Stop the Turn",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.agreeHook",
+        "title": "Agree to a Project Hook",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.refuseHook",
+        "title": "Refuse a Project Hook",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.startDaemon",
+        "title": "Start the Daemon in a Terminal",
+        "category": "openmirror"
+      },
+      {
+        "command": "openmirror.showOutput",
+        "title": "Show Output",
+        "category": "openmirror"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "openmirror.openPanel",
+          "when": "resourceScheme == file",
+          "group": "navigation@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "openmirror.openPanel",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@9"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "openmirror",
+      "properties": {
+        "openmirror.host": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "order": 1,
+          "description": "Where the daemon listens. Empty reads OPENMIRROR_HOST, then 127.0.0.1."
+        },
+        "openmirror.port": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "order": 2,
+          "description": "The daemon's port. Empty reads OPENMIRROR_PORT, then 8477."
+        },
+        "openmirror.token": {
+          "type": "string",
+          "scope": "window",
+          "order": 3,
+          "description": "Only needed if the daemon was started with OPENMIRROR_TOKEN, which this falls back to."
+        },
+        "openmirror.model": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "order": 4,
+          "description": "Model for new conversations, e.g. anthropic. Empty means the daemon picks."
+        },
+        "openmirror.provider": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "order": 5,
+          "description": "Provider for new conversations. Empty means the daemon picks."
+        },
+        "openmirror.mode": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "enum": [
+            "",
+            "read_only",
+            "plan",
+            "ask",
+            "auto_edit",
+            "trusted",
+            "unrestricted"
+          ],
+          "enumDescriptions": [
+            "Let the daemon decide. Its default is ask.",
+            "Nothing that changes anything, ever.",
+            "Reads run; nothing else does until a plan is approved.",
+            "Reads run; everything else is asked. The daemon's default.",
+            "Reads and file writes run; commands are asked.",
+            "Commands run too; destructive things are asked.",
+            "Nothing is asked."
+          ],
+          "order": 6,
+          "description": "What may run without asking, in new conversations. Empty means the daemon's default: ask."
+        },
+        "openmirror.effort": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "enum": [
+            "",
+            "off",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "default"
+          ],
+          "enumDescriptions": [
+            "Let the daemon decide.",
+            "off",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "default"
+          ],
+          "order": 7,
+          "description": "Thinking level for new conversations: off to max. Empty means the daemon picks."
+        },
+        "openmirror.root": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "order": 8,
+          "description": "The one folder new conversations are confined to. Empty means the workspace's first folder."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "vscode:prepublish": "node --check src/extension.js && node --check src/host.js && node --check src/ws.js"
+  }
+}

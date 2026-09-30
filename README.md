@@ -40,6 +40,48 @@ one, and watching one work are different kinds of attention:
 
 ---
 
+## Parity, and where it stops
+
+This started as an open-source digital twin of Claude Code and openCode, so
+the honest thing is to say what matches and what does not rather than let
+"parity" sit in a marketing sentence.
+
+| | Claude Code | openCode | this |
+|---|---|---|---|
+| Terminal client | ✓ | ✓ | ✓ `openmirror chat` |
+| Headless one-shot, pipes, CI | ✓ `-p` | ✓ `run` | ✓ `openmirror run` |
+| Edit, patch, search, shell, notebook | ✓ | ✓ | ✓ |
+| Plan mode, to-do list, subagents | ✓ | ✓ | ✓ |
+| Custom agents as markdown, per-role tools | ✓ | ✓ | ✓ |
+| Skills, slash commands, `CLAUDE.md`/`AGENTS.md` | ✓ | ✓ | ✓ `opencode.md` too |
+| Model and effort switchable mid-conversation | ✓ | ✓ | ✓ `/model`, `/think` |
+| Undo and redo, repeatable | ✓ `/undo` | ✓ | ✓ `/undo`, `/redo` |
+| Session search across every conversation | ✓ | ✓ | ✓ |
+| Share a conversation as a file | ✓ | ✓ `/share` | ✓ one self-contained HTML file |
+| Resumable transcripts, fork, export | ✓ | ✓ | ✓ |
+| Checkpoint rewind, hunk-by-hunk review | ✓ | ✓ | ✓ |
+| MCP, as client and as server | ✓ | ✓ | ✓ stdio, HTTP and SSE, both ways |
+| LSP: definitions, diagnostics, code actions, rename, format | partial | ✓ | ✓ |
+| Pull requests from the agent | ✓ | ✓ | ✓ `git pr_create` |
+| Images pasted into the prompt | ✓ | ✓ | ✓ |
+| Hooks, custom tools, providers, themes, keybinds | ✓ | ✓ | ✓ except keybinds are fixed |
+| Terminal, desktop app, browser, IDE extension | ✓ | ✓ | all four — the VS Code extension ships as a `.vsix` beside the installers |
+| Web search, browser control, image and video generation | ✓ | partial | ✓ and more than openCode does |
+| Cost per session | ✓ | ✓ | **deliberately not** — see below |
+
+**Not built, on purpose.** Cloud sessions, a hosted web version, a phone app,
+scheduled recurring tasks, team chat integrations, and any account system.
+Those are all somebody else's servers, and a tool that runs commands on your
+machine is a different promise from one that runs them on a rented box.
+
+**Not built, and it could be.** A **JetBrains** plugin — IntelliJ, PyCharm,
+WebStorm. The VS Code extension is the same panel against the same daemon, and
+`ide/vscode/` is deliberately plain CommonJS with no dependencies and no build
+step, so a JetBrains plugin is a different shell around the same protocol rather
+than a second implementation of it. It is the largest remaining gap.
+
+---
+
 ## What works today
 
 **An agent that acts on the machine.** Read, write, edit, multi-edit, patch,
@@ -203,10 +245,11 @@ routing and Tor in [docs/PROVIDERS.md](docs/PROVIDERS.md). Mail has its own
 page — [docs/MAIL.md](docs/MAIL.md) — because why IMAP rather than a vendor
 API, and what `threadId` is worth, do not fit in a paragraph. Hooks have
 [docs/HOOKS.md](docs/HOOKS.md), where the property that makes running a
-project's code defensible is written out in full. Leave has
-[docs/SESSIONS.md](docs/SESSIONS.md) covers what is still here tomorrow.
-[docs/LEAVE.md](docs/LEAVE.md) is mostly about when the assessment
-*declines* to answer — which is the part that matters.
+project's code defensible is written out in full.
+[docs/SESSIONS.md](docs/SESSIONS.md) covers what is still here tomorrow and
+[docs/CLI.md](docs/CLI.md) the command line and the terminal client. Leave has
+[docs/LEAVE.md](docs/LEAVE.md), which is mostly about when the assessment
+*declines* to answer — the part that matters.
 
 **The web, and a real browser.** `web_search` and `web_fetch` for reading,
 `research` for answering — several searches and the pages behind them in one
@@ -381,6 +424,18 @@ graded `execute` and lumped in with `npm run build`. There is deliberately no
 `reset --hard` or `clean -f` in the tool: both are one `shell` call away,
 already graded `destructive` there, and a foot-gun does not belong in a
 first-class tool.
+
+Pull requests are three more actions on the same tool — `pr_create`, `pr_view`,
+`pr_list` — through the `gh` CLI when it is on PATH and the GitHub REST API
+with `GITHUB_TOKEN` when it is not, and a plain sentence naming both when
+neither is. `pr_create` refuses on a dirty tree rather than staging anything
+itself, and `fill` uses the commits since the merge base as the body when you
+did not write one. It is graded `message`, not `network`: the difference is
+not the socket, it is the audience. A push notifies nobody; a pull request
+tells reviewers — and on a public repository, the world — that somebody is
+asking for their code to be read, under their name, and it cannot be recalled.
+That is why it is asked about in *every* mode, including the unrestricted one,
+and why it cannot be remembered as a standing yes.
 
 The Commit bar in the header follows your working root and only appears when
 there is a repository with something in it. Its two buttons are the whole
@@ -777,6 +832,11 @@ no terminal, nothing else to install. It is a window that lives in the tray
 when you close it and tells you when the agent is waiting on you; the daemon
 runs for as long as the app does. See [desktop/README.md](desktop/README.md).
 
+**In your editor.** Every release also carries `openmirror.vsix` for VS Code:
+the same conversation in a panel beside your code, with approvals, `/commands`,
+`@file` mentions and pasted images. It is a client of the daemon like the
+browser is, so it needs one running — [ide/vscode/README.md](ide/vscode/README.md).
+
 **From source, or on a machine with no screen** — a server, a GPU box — run the
 daemon by itself. Linux, macOS and Windows. Python 3.11+.
 
@@ -785,6 +845,19 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 cp .env.example .env      # then edit it — it is read at start-up
 .venv/bin/openmirror
 ```
+
+**Or drive it from the terminal.** `openmirror run` is the agent headless —
+one prompt, start to finish, no browser, and a pipe in or out, which is what
+makes it usable in CI:
+
+```bash
+openmirror run -p "explain what this repo does"
+git diff | openmirror run -p "review this diff for security problems"
+```
+
+`openmirror chat` is a terminal client for a running daemon: streaming output,
+approvals, `/commands`, `@file` mentions and pasted images. The full surface is
+in [docs/CLI.md](docs/CLI.md).
 
 The optional extras, none of which an install needs to be complete:
 
@@ -896,7 +969,7 @@ meant to be that server.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-1550 tests. Some groups carry more weight than the rest.
+2036 tests. Some groups carry more weight than the rest.
 
 The shell risk classifier is tested as the security control it is: every case
 is a regression guard, and a change that moves any of them out of

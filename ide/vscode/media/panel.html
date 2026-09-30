@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  The content security policy, and it is the second half of the rule in
+  PROTOCOL.md.
+
+  `default-src 'none'` means nothing loads unless a directive below says so, and
+  `connect-src 'none'` is the load-bearing one: this page has no business
+  talking to a network, because the daemon's URL is deliberately not something
+  it knows. There is nowhere for a request to go even if something managed to
+  make one.
+
+  `img-src data:` is the only reason anything is allowed to be drawn from
+  anywhere at all, and it is for the two kinds of image the daemon and the
+  composer carry: a screenshot a tool returned, and a picture somebody pasted.
+  Both are data URLs and both are content, not code.
+
+  Two things must be substituted by `src/extension.js` before the webview is
+  pointed at this file, and neither is optional:
+
+    {{cspSource}}  `webview.cspSource` -- the `vscode-webview://` origin. It is
+                   what makes `panel.css` loadable, because VS Code injects its
+                   own `--vscode-*` variables into a <style> block and a
+                   stylesheet served from the extension has to come from the
+                   same origin as the webview.
+    {{nonce}}      a fresh base64 nonce per load, from `crypto.randomBytes(16)`.
+                   It goes on the <script> tag as well as here, because a nonce
+                   in the policy that is not on the element authorises nothing.
+
+  `style-src 'unsafe-inline'` is required and is VS Code's doing, not this
+  page's: the editor injects the theme variables as an inline stylesheet, and
+  without it the panel has no colours at all. It is the only `unsafe-*` in the
+  policy. There is no `script-src 'unsafe-inline'` and no `script-src
+  'unsafe-eval'`, so no inline script and no `eval` can run here even if
+  something managed to write markup -- which it cannot, because there is no
+  `innerHTML` in this directory.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none';
+  img-src data:;
+  style-src {{cspSource}} 'unsafe-inline';
+  script-src 'nonce-{{nonce}}';
+  connect-src 'none';
+  frame-src 'none';
+  child-src 'none';
+  object-src 'none';
+  media-src 'none';
+  font-src 'none';
+  base-uri 'none';
+  form-action 'none';">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="panel.css">
+<title>openmirror</title>
+</head>
+<body>
+  <!-- The bar. The link pill is the one thing that is never hidden: whether the
+       daemon is answering is the first question anybody has, and a panel that
+       is quietly not connected looks exactly like a panel with nothing to say. -->
+  <header id="bar">
+    <span id="title" class="title">openmirror</span>
+    <span id="policy" class="meta"></span>
+    <div class="spacer"></div>
+    <button id="open" type="button" class="ghost small"
+            title="Pick a stored conversation">History</button>
+    <span id="link" class="pill connecting" role="status" aria-live="polite">connecting</span>
+  </header>
+
+  <!-- A project hook wants to run. A strip, not a dialog: it must not cover
+       the turn that is running, and a question nobody is asked is a policy
+       nobody agreed to. -->
+  <div id="hooks" class="banner" role="status" hidden></div>
+
+  <main id="transcript" role="log" aria-live="polite" aria-label="Conversation">
+    <!-- What an empty panel looks like. The moment there is anything to read
+         it goes and the transcript takes the room. `emptyState()` in status.js
+         fills the two lines, and names the command that starts the daemon when
+         the daemon is not running. -->
+    <div id="hero">
+      <p id="hero-ask">What should we do?</p>
+      <p id="hero-sub" class="meta"></p>
+      <p id="hero-why" class="meta why" hidden></p>
+      <!-- Only when the link has failed for good. The host stops retrying on
+           purpose — a stopped daemon will not start itself — so without this
+           the conversation could only be got back by closing the tab. -->
+      <button id="hero-retry" class="retry" hidden>Try again</button>
+    </div>
+  </main>
+
+  <form id="composer">
+    <!-- What stays in view while the transcript scrolls: where the agent is in
+         its own to-do list. Which step is it on is the question somebody
+         watching a long turn keeps asking, and in a panel the transcript is
+         rarely showing the part that answers it. -->
+    <div id="todos" class="todos" hidden></div>
+
+    <div id="field">
+      <ul id="slash" class="menu" role="listbox" aria-label="Commands and skills" hidden></ul>
+      <ul id="mentions" class="menu" role="listbox" aria-label="Files to mention" hidden></ul>
+
+      <!-- Pictures pasted or dropped into the composer, each removable. Hidden
+           when empty, which is most of the time. -->
+      <div id="pictures" aria-label="Attached pictures" hidden></div>
+
+      <textarea id="input" rows="1" spellcheck="true"
+                placeholder="Ask it to do something, or / for commands and @ for files"
+                aria-label="Message"></textarea>
+
+      <div id="controls">
+        <label id="mode-wrap" class="chip">
+          <span class="chip-label">approval</span>
+          <select id="mode" aria-label="Approval mode"></select>
+        </label>
+        <label id="effort-wrap" class="chip">
+          <select id="effort" aria-label="Thinking level"></select>
+        </label>
+        <div class="spacer"></div>
+        <button id="attach" type="button" class="ghost small"
+                title="Attach a picture (or just paste one)">Picture</button>
+        <!-- Both buttons, and they do different things. Send is never hidden
+             while a turn is running: the daemon holds a message sent during a
+             turn and runs it when the turn ends, and refusing it throws away
+             the thing you just typed. -->
+        <button id="send" type="submit" class="btn allow" title="Send" disabled>Send</button>
+        <button id="stop" type="button" class="btn deny" title="Stop this turn" hidden>Stop</button>
+      </div>
+    </div>
+
+    <div id="status-row">
+      <span id="root-chip" class="chip flat" hidden><span></span></span>
+      <span id="model-chip" class="chip flat" hidden></span>
+      <div class="spacer"></div>
+      <!-- How full the conversation is. The number is exact; the bar only
+           appears when there is a denominator to draw it against, because a bar
+           at 40% on a model that will refuse the request is worse than no bar.
+           Clicking it is the same as typing /compact. -->
+      <button id="context-meter" class="meter" hidden title="How full the conversation is.">
+        <span id="context-bar" class="bar" hidden><span class="fill"></span></span>
+        <span id="context-text"></span>
+      </button>
+    </div>
+
+    <p id="hint">Enter sends  -  Shift+Enter newline  -  / commands  -  @ files  -  Esc stops the turn</p>
+  </form>
+
+  <!-- The resume picker. A dialog because it is a question, and a question
+       belongs over the panel rather than in the room of the conversation you
+       came to read. -->
+  <dialog id="sessions" aria-label="Stored conversations">
+    <div class="dialog-head">
+      <span>Stored conversations</span>
+      <button id="sessions-close" type="button" class="ghost small" title="Close">Close</button>
+    </div>
+    <div id="sessions-list" class="sessions-list"></div>
+  </dialog>
+
+  <script type="module" nonce="{{nonce}}" src="main.js"></script>
+</body>
+</html>

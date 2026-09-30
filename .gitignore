@@ -23,3 +23,11 @@ desktop/sidecar/build/
 # install actually ran from the repo root and left it untracked in `git
 # status`, which is one `git add -A` away from publishing a memory store.
 data/
+
+# The VS Code extension's own build output, and whatever npm left behind
+# trying to package it. The extension has no dependencies and no build step, so
+# `node_modules/` should never appear at all; it is here for the day someone
+# runs `npx` in that directory by hand.
+ide/vscode/*.vsix
+ide/vscode/node_modules/
+ide/vscode/package-lock.json

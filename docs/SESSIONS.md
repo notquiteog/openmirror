@@ -9,6 +9,13 @@ Every turn is written to `data/sessions/`, one JSON file per session plus a
 small index in front of them.
 
 * `GET /api/sessions/stored` — every conversation on disk, newest first.
+* `GET /api/sessions/search?q=` — every conversation, matching messages rather
+  than titles. Answers with the excerpt and the character offsets of the match
+  *inside* it, never markup: a transcript contains whatever the agent read, so a
+  server that returned HTML would make every future client responsible for
+  escaping it forever. It reads the tail of each transcript rather than all of
+  it, which is a bound and not a guarantee — a mention older than that window is
+  found by its title or not at all.
 * `POST /api/sessions/{id}/resume` — reopen one. The root, model and toolset
   come from the transcript, not the request: a conversation about one project
   reopened in another is a conversation that will confidently edit the wrong
@@ -18,6 +25,18 @@ small index in front of them.
   shared: a fork is a different *conversation*. `at: 0` is a copy under a new
   name rather than a fork, which is a legitimate thing to want.
 * `GET /api/sessions/{id}/export` — Markdown, for pasting somewhere else.
+* `GET /api/sessions/{id}/export.json` — the whole stored record, encoded blocks
+  and all.
+* `GET /api/sessions/{id}/export.html` — one self-contained HTML file: escaped
+  text, no scripts, no external CSS or fonts, light and dark via
+  `prefers-color-scheme`. This is what the **share** button in the sidebar
+  writes, and it is the honest version of a `/share` link for a tool that runs
+  on your own machine and has nowhere to publish.
+
+A session is named after the folder until its first message arrives, and then
+after that message — because a list of ten conversations all called
+`openmirror` is not a list. A title a person set, or one derived from an
+earlier message, is never overwritten.
 
 **What is stored, and what deliberately is not.** The messages, the title, the
 root, the model, the toolset. Not the tools, not the provider, not the
