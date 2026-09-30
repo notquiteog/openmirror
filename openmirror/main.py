@@ -7,7 +7,6 @@ import contextlib
 import logging
 import os
 import sys
-import threading
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -23,6 +22,7 @@ from openmirror.routers import auth as auth_router
 from openmirror.routers import autopilot as autopilot_router
 from openmirror.routers import browser as browser_router
 from openmirror.routers import git as git_router
+from openmirror.routers import history as history_router
 from openmirror.routers import mail as mail_router
 from openmirror.routers import mcp as mcp_router
 from openmirror.routers import media as media_router
@@ -212,6 +212,11 @@ app.include_router(agent_router.router)
 # calls, and because a browser tab that wants the session list should not have
 # to open a socket to ask for it.
 app.include_router(agent_router.http)
+# Search across stored conversations, and a shareable copy of one. Mounted next
+# to the session surface above because that is what it extends: the same
+# `/api/sessions` prefix, the same stored transcripts, the same 404 for an id
+# nothing has heard of.
+app.include_router(history_router.router)
 app.include_router(voice_router.router)
 app.include_router(providers_router.router)
 app.include_router(memory_router.router)
@@ -272,19 +277,23 @@ async def healthz() -> dict[str, object]:
 
 
 def main() -> None:
-    import uvicorn
+    """The command line — or the daemon, when nobody asked for one.
 
-    server = uvicorn.Server(
-        uvicorn.Config('openmirror.main:app', host=config.host, port=config.port, log_level=config.log_level.lower())
-    )
-    if config.exit_with_stdin:
-        threading.Thread(target=_exit_when_stdin_closes, args=(server,), name='stdin', daemon=True).start()
-    server.run()
-    # What `uvicorn.run` does, and the reason to keep it: a port that was
-    # already taken should be a failed start to whoever launched this, not a
-    # clean exit.
-    if not server.started:
-        sys.exit(3)
+    Kept as a no-argument function because two callers depend on exactly that
+    shape: the desktop app's frozen sidecar imports this one and calls it, and
+    `daemon.rs` spawns the binary with an empty argv as well as
+    `python3 -m openmirror.main`. With no arguments the CLI dispatches straight
+    to the server, so both of them get precisely the behaviour they got before
+    a command line existed.
+
+    The work lives in `openmirror.cli` rather than here for two reasons: a
+    command that parses flags should not have to import FastAPI to answer
+    `--version`, and a dispatch table that starts a server is not something a
+    test can exercise without starting one.
+    """
+    from openmirror.cli import main as cli_main
+
+    raise SystemExit(cli_main())
 
 
 def _exit_when_stdin_closes(server) -> None:
