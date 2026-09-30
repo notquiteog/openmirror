@@ -10,7 +10,7 @@ The protocol is JSON-RPC over stdio with a Content-Length header per message.
 Written here rather than taken from a library for the same reason as the MCP
 client: the part a client needs is small, and the servers are the moving part.
 
-Two properties matter more than coverage.
+Three properties matter more than coverage.
 
 **Starting a server can run the project's code.** rust-analyzer runs build
 scripts and proc macros; others load plugins the project's own config names.
@@ -23,12 +23,24 @@ because that is the fact that decides the risk.
 indexing answers with nothing — which looks exactly like "this has no
 definition". Requests time out, the client tracks the server's own progress
 reports, and an empty answer given while it is busy says so.
+
+**An edit the server offers is an edit, and it is made here.** Code actions,
+renames and formatting all come back as text edits with positions in them,
+which is the one part of the protocol where being wrong does not return
+nothing — it rewrites a file. So the writes go through `apply_edit`, which
+takes the caller's own path confinement as a parameter and will not write a
+byte without it, resolves every file before touching any of them, and
+refuses the whole edit if one path lands outside the root. The server's own
+`workspace/applyEdit` — the way around all of this — is answered
+`applied: false`, and a fix that arrives as a command to run inside the
+server is refused for the same reason.
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
+import collections.abc
 import contextlib
 import json
 import logging
@@ -61,6 +73,79 @@ class ServerSpec:
     # Where the binary is, once it has been found on PATH. A spec with none is
     # a server this machine does not have.
     binary: str = ''
+
+
+# ---------------------------------------------------------------------------
+# What comes back, in shapes of our own
+#
+# The protocol's answers are all dicts, and the two that change files carry
+# positions that mean nothing without the text they are positions in. These
+# hold the parts worth keeping and drop the rest, so the tool that renders them
+# never has to know which of the two forms a server chose.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class TextEdit:
+    """One replacement, in the protocol's own coordinates.
+
+    Left as a line and a UTF-16 character offset rather than an index into a
+    string, because that is what arrives and turning it into an index needs
+    the file — which is on disk, and which a number cannot follow.
+    """
+
+    start_line: int
+    start_character: int
+    end_line: int
+    end_character: int
+    new_text: str
+
+
+@dataclass(slots=True)
+class FileEdits:
+    uri: str
+    edits: list[TextEdit] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class WorkspaceEdit:
+    """Changes to one or more files, whichever form they arrived in."""
+
+    files: list[FileEdits] = field(default_factory=list)
+    # `changes` is the older map of uri to text edits; `documentChanges` the
+    # newer ordered list, and the only one that can also create, rename or
+    # delete a file. Those arrive as `file_ops`, and they are refused rather
+    # than quietly dropped — see `apply_edit`.
+    document_changes: bool = False
+    file_ops: list[tuple[str, str]] = field(default_factory=list)
+    # The payload as the server sent it, so which form it chose is still
+    # visible after parsing and nothing is thrown away a caller might want.
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def for_file(cls, uri: str, edits: list[TextEdit], raw: Any = None) -> WorkspaceEdit:
+        """The one-file case, which is what formatting comes back as."""
+        return cls(files=[FileEdits(uri, list(edits))], raw=raw if isinstance(raw, dict) else {})
+
+
+@dataclass(slots=True)
+class CodeAction:
+    """One thing the server offers to do about a range."""
+
+    title: str
+    kind: str = ''
+    edit: WorkspaceEdit | None = None
+    # Why it cannot be applied: the server's own `disabled`, or this client
+    # refusing to run a command. Empty when it can be.
+    disabled: str = ''
+
+
+@dataclass(slots=True)
+class AppliedFile:
+    path: Path
+    before: str
+    after: str
+    edits: int
 
 
 # What each extension is called in the protocol. Servers use it to decide how
@@ -108,6 +193,22 @@ CLIENT_CAPABILITIES: dict[str, Any] = {
         'documentSymbol': {'hierarchicalDocumentSymbolSupport': True},
         'publishDiagnostics': {},
         'diagnostic': {},
+        # Declared with the kinds a server should offer, because a client that
+        # says nothing here gets `Command[]` back instead of `CodeAction[]` —
+        # and a command is a request to have the server do the editing, which
+        # is the side door this file closes on workspace/applyEdit. A server
+        # that is told it may return edits returns edits.
+        'codeAction': {
+            'codeActionLiteralSupport': {'codeActionKind': {'valueSet': [
+                '', 'quickfix', 'refactor', 'refactor.extract', 'refactor.inline',
+                'refactor.rewrite', 'source', 'source.organizeImports', 'source.fixAll',
+            ]}},
+        },
+        # False, because prepareRename is a request this client does not
+        # answer, and a server told to prepare will ask and wait.
+        'rename': {'prepareProvider': False},
+        'documentFormatting': {},
+        'documentRangeFormatting': {},
     },
 }
 
@@ -119,6 +220,224 @@ def language_id(path: Path) -> str:
 def uri_to_path(uri: str) -> Path:
     parsed = urlparse(uri)
     return Path(unquote(parsed.path)) if parsed.scheme == 'file' else Path(uri)
+
+
+# ---------------------------------------------------------------------------
+# Positions, edits, and putting them on disk
+# ---------------------------------------------------------------------------
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(value, high))
+
+
+def _utf16_offset(line: str, character: int) -> int:
+    """The index into `line` of a character offset counted in UTF-16 code units.
+
+    The protocol counts positions in code units and Python indexes by code
+    point, and the two disagree on anything outside the BMP: an emoji is one
+    code point and two code units, so every column after one on that line is a
+    character out if the server's number is used as a Python index. That is not
+    a rare encoding — it is a character in a comment on the line above the
+    edit — so the conversion is done by measuring, not by assuming.
+
+    A `character` that lands in the middle of a surrogate pair is a server's
+    bug, and decoding with `surrogatepass` turns it into the code point it
+    belongs to instead of an exception in the middle of a write.
+    """
+    if character <= 0:
+        return 0
+    encoded = line.encode('utf-16-le')
+    if character * 2 >= len(encoded):
+        # Past the end of this line, which formatters do on purpose.
+        return len(line)
+    return len(encoded[: character * 2].decode('utf-16-le', 'surrogatepass'))
+
+
+def _line_starts(lines: list[str]) -> list[int]:
+    """Where each line begins, and one past the last.
+
+    The extra entry is the end of the document, which the protocol addresses as
+    a line one beyond the last one. `keepends` is what makes the arithmetic
+    come out: the newline belongs to the line, so the next line starts after it.
+    """
+    starts, at = [], 0
+    for line in lines:
+        starts.append(at)
+        at += len(line)
+    starts.append(at)
+    return starts
+
+
+def apply_text_edits(text: str, edits: collections.abc.Sequence[TextEdit]) -> str:
+    """`text` with `edits` applied, under the one rule the protocol sets about them.
+
+    Every range in a set of text edits refers to the document as it was
+    *before* any of them, so the positions do not move as the edits land.
+    Which is why they are applied from the last one backwards: in the order a
+    server listed them, the first edit would shift the offsets of the rest and
+    a rename would land a character along from where it was meant to.
+    """
+    original = text
+    lines = original.splitlines(keepends=True)
+    starts = _line_starts(lines)
+
+    def at(line: int, character: int) -> int:
+        if not lines:
+            return 0
+        if line >= len(lines):
+            # One past the last line is how the protocol addresses the end of
+            # the document, and it is an offset like any other. Clamping it to
+            # the last line instead would put the end of a whole-file edit at
+            # the start of that line, which is a file with its last line
+            # duplicated.
+            return starts[-1]
+        row = _clamp(line, 0, len(lines) - 1)
+        return starts[row] + _utf16_offset(lines[row], character)
+
+    spans = sorted(
+        ((at(e.start_line, e.start_character), at(e.end_line, e.end_character), e.new_text) for e in edits),
+        reverse=True,
+    )
+    for (start, _end, _), (_earlier, earlier_end, _) in zip(spans, spans[1:], strict=False):
+        if start < earlier_end:
+            # Forbidden by the protocol, and there is no right order to apply
+            # them in: the file that came out would be a coin toss.
+            raise LspError('two of the edits this server sent overlap, so none of them were applied')
+
+    for start, end, new_text in spans:
+        original = original[:start] + new_text + original[end:]
+    return original
+
+
+def _read_one(path: Path, edits: collections.abc.Sequence[TextEdit]) -> tuple[str, str]:
+    """What the file says now, and what it would say after these edits."""
+    try:
+        before = path.read_text(encoding='utf-8')
+    except FileNotFoundError as exc:
+        raise LspError(f'{path}: the server wants to edit a file that is not there') from exc
+    except UnicodeDecodeError as exc:
+        # Not an OSError, and the one refusal here that is about safety rather
+        # than arithmetic: writing back a file this could not decode would
+        # replace every byte it did not understand with U+FFFD, which is a
+        # corruption wearing the costume of a fix.
+        raise LspError(f'{path}: not text this client can rewrite ({exc})') from exc
+    except OSError as exc:
+        raise LspError(f'{path}: cannot be read to edit it ({exc})') from exc
+    return before, apply_text_edits(before, edits)
+
+
+def _write_one(path: Path, before: str, after: str, count: int, checkpoint: Any) -> AppliedFile:
+    if after != before:
+        if checkpoint is not None:
+            checkpoint.record(path)
+        path.write_text(after, encoding='utf-8')
+    return AppliedFile(path, before, after, count if after != before else 0)
+
+
+async def apply_edit(
+    edit: WorkspaceEdit,
+    resolve: collections.abc.Callable[[str], Path],
+    checkpoint: Any = None,
+) -> list[AppliedFile]:
+    """Put an edit on disk, or none of it.
+
+    `resolve` is the caller's confinement: it turns a URI into a path this
+    session is allowed to write, or raises. It is a parameter rather than a
+    root because the rule is not the client's to know — an extra allowed
+    directory, or no confinement at all, is a property of the session — and
+    because a function that cannot be called without one has no route to the
+    disk that skipped the check.
+
+    Every file is resolved and worked out before the first byte is written.
+    That is what makes the promise above true of the failures that matter — a
+    path outside the root, a file that is not there, one that is not text, two
+    edits that overlap — rather than only of the ones that happen to come
+    first. Half a rename is a workspace that does not compile, and it is much
+    harder to notice than an edit that was refused.
+    """
+    if edit.file_ops:
+        wanted = ', '.join(f'{what} {uri}' for what, uri in edit.file_ops)
+        raise LspError(
+            f'the server also wants to {wanted}, which this client does not do — it applies text edits and '
+            'nothing else, so none of this edit was written'
+        )
+
+    targets: list[tuple[Path, list[TextEdit]]] = []
+    outside: list[str] = []
+    for group in edit.files:
+        if not group.edits:
+            continue
+        try:
+            targets.append((resolve(group.uri), group.edits))
+        except Exception as exc:  # noqa: BLE001 - the caller's own refusal, passed on in its words
+            outside.append(f'{group.uri} ({exc})')
+    if outside:
+        raise LspError(
+            f'this edit reaches outside the working root, so none of it was written: {"; ".join(outside)}'
+        )
+
+    prepared: list[tuple[Path, str, str, int]] = []
+    for path, edits in targets:
+        before, after = await asyncio.to_thread(_read_one, path, edits)
+        prepared.append((path, before, after, len(edits)))
+
+    written: list[AppliedFile] = []
+    for path, before, after, count in prepared:
+        written.append(await asyncio.to_thread(_write_one, path, before, after, count, checkpoint))
+    return written
+
+
+def _text_edits(items: Any) -> list[TextEdit]:
+    out: list[TextEdit] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        rng = item.get('range') or {}
+        start, end = rng.get('start') or {}, rng.get('end') or {}
+        out.append(TextEdit(
+            start_line=int(start.get('line', 0)),
+            start_character=int(start.get('character', 0)),
+            end_line=int(end.get('line', 0)),
+            end_character=int(end.get('character', 0)),
+            new_text=str(item.get('newText', '')),
+        ))
+    return out
+
+
+def parse_workspace_edit(raw: Any) -> WorkspaceEdit:
+    """The two forms the protocol allows, as one shape.
+
+    `changes` is the older map of uri to text edits; `documentChanges` the
+    newer ordered list, and the only one that can create, rename or delete a
+    file. A server that sends both is using the list, which is what the spec
+    says and which is the one with the newer capabilities in it.
+    """
+    if not isinstance(raw, dict):
+        return WorkspaceEdit()
+    edit = WorkspaceEdit(document_changes='documentChanges' in raw, raw=raw)
+
+    changes = raw.get('changes') or {}
+    if isinstance(changes, dict):
+        for uri, edits in changes.items():
+            edit.files.append(FileEdits(uri, _text_edits(edits)))
+
+    for change in raw.get('documentChanges') or []:
+        if not isinstance(change, dict):
+            continue
+        if 'edits' in change:
+            document = change.get('textDocument') or {}
+            edit.files.append(FileEdits(str(document.get('uri', '')), _text_edits(change['edits'])))
+        elif 'kind' in change:
+            # A create, rename or delete. Kept, never applied: doing it would
+            # be this client reaching for a file the agent never named.
+            where = str(change.get('oldUri') or change.get('uri', ''))
+            edit.file_ops.append((str(change.get('kind', 'change')), where))
+    return edit
+
+
+def _point(position: dict[str, Any]) -> tuple[int, int]:
+    return int(position.get('line', 0)), int(position.get('character', 0))
 
 
 def _configured(path: Path | None) -> list[tuple[ServerSpec, bool]]:
@@ -299,6 +618,17 @@ class LanguageServer:
                 + (f'\n\nIt said:\n{said}' if said else '')
             ) from exc
         self.capabilities = (result or {}).get('capabilities') or {}
+        encoding = self.capabilities.get('positionEncoding') or (self.capabilities.get('general') or {}).get(
+            'positionEncoding'
+        )
+        if encoding and encoding != 'utf-16':
+            # Every position in this file — the ones the tool sends and the ones
+            # the server sends back — is counted in UTF-16 code units, and the
+            # client said so in its capabilities. A server that picked
+            # something else needs a client that negotiated; said out loud
+            # rather than acted on, because an edit a few characters along is
+            # worse than a warning nobody reads.
+            log.warning('lsp: %s chose %s positions; this client counts in utf-16', self.spec.name, encoding)
         await self.notify('initialized', {})
         self._started = asyncio.get_running_loop().time()
         log.info('lsp: %s started for %s', self.spec.name, self.root)
@@ -565,6 +895,113 @@ class LanguageServer:
                 except TimeoutError:
                     return False
         return True
+
+    # -- changes ------------------------------------------------------------
+
+    async def code_action(
+        self,
+        path: Path,
+        start: dict[str, int],
+        end: dict[str, int] | None = None,
+        only: str | collections.abc.Sequence[str] | None = None,
+    ) -> list[CodeAction]:
+        """What the server would do about this range, in its own words.
+
+        The diagnostics sent alongside are the ones it has actually published
+        for this file that touch the range, and not a made-up range: a server
+        offered a diagnostic it never reported answers with nothing, and "this
+        line has no fix" is then a statement about the wrong diagnostic.
+        """
+        uri = path.as_uri()
+        end = end or start
+        sent = [
+            d for d in self.diagnostics.get(uri, [])
+            if isinstance(d, dict) and _overlaps(d.get('range') or {}, start, end)
+        ]
+        context: dict[str, Any] = {'diagnostics': sent}
+        if only:
+            context['only'] = [only] if isinstance(only, str) else list(only)
+        result = await self.request('textDocument/codeAction', {
+            'textDocument': {'uri': uri},
+            'range': {'start': start, 'end': end},
+            'context': context,
+        })
+
+        out: list[CodeAction] = []
+        for item in result or []:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get('edit')
+            # Not `parse_workspace_edit(raw) or None`: a dataclass is always
+            # true whatever is in it, so an action with no edit at all would
+            # come back looking like one whose edit is empty, and the two get
+            # different answers from the model.
+            action = CodeAction(
+                title=str(item.get('title', '')),
+                kind=str(item.get('kind', '')),
+                edit=parse_workspace_edit(raw) if isinstance(raw, dict) else None,
+            )
+            out.append(self._unusable(action, item))
+        return out
+
+    @staticmethod
+    def _unusable(action: CodeAction, item: dict[str, Any]) -> CodeAction:
+        """Fill in why an action cannot be applied, if it cannot.
+
+        Two reasons, one field. The server's own `disabled` — a string since
+        3.17, an object with a reason or a bare boolean before that — and a
+        command, which asks the server to do the work itself. A command is
+        workspace/applyEdit with the door shut from the other side, so it is
+        refused in the same breath, and the reason the model reads names which
+        of the two it was.
+        """
+        why = item.get('disabled')
+        if isinstance(why, dict):
+            action.disabled = str(why.get('reason', ''))
+        elif isinstance(why, str):
+            action.disabled = why
+        elif why:
+            action.disabled = 'the server says it cannot be applied, without saying why'
+        command = item.get('command')
+        if command and not action.disabled:
+            name = (command.get('command', '?') if isinstance(command, dict) else str(command))
+            action.disabled = f'it runs a command inside the server ({name}), which this client will not do'
+        return action
+
+    async def rename(self, path: Path, position: dict[str, int], new_name: str) -> WorkspaceEdit:
+        """The changes that rename one symbol everywhere it appears.
+
+        Null rather than an error is how the protocol says "not that one", and
+        a model told that a symbol cannot be renamed will edit the name
+        itself, where a server failure sends it looking for a bug.
+        """
+        result = await self.request('textDocument/rename', {
+            'textDocument': {'uri': path.as_uri()}, 'position': position, 'newName': new_name,
+        })
+        if not isinstance(result, dict):
+            raise LspError(f'{self.spec.name} will not rename that')
+        return parse_workspace_edit(result)
+
+    async def formatting(self, path: Path, options: dict[str, Any] | None = None) -> list[TextEdit]:
+        """The edits that format a whole file. Empty when it is already formatted."""
+        return _text_edits(await self.request('textDocument/formatting', {
+            'textDocument': {'uri': path.as_uri()}, 'options': options or {},
+        }))
+
+    async def range_formatting(
+        self, path: Path, start: dict[str, int], end: dict[str, int],
+        options: dict[str, Any] | None = None,
+    ) -> list[TextEdit]:
+        """The edits that format a range, for the formatter that can be told to."""
+        return _text_edits(await self.request('textDocument/rangeFormatting', {
+            'textDocument': {'uri': path.as_uri()}, 'range': {'start': start, 'end': end},
+            'options': options or {},
+        }))
+
+
+def _overlaps(rng: dict[str, Any], start: dict[str, int], end: dict[str, int]) -> bool:
+    """Whether a diagnostic's range touches the range asked about."""
+    return _point(rng.get('start') or {}) <= _point(end) and _point(rng.get('end') or {}) >= _point(start)
 
 
 class LspPool:

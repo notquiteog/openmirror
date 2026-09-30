@@ -38,11 +38,21 @@ helper that generated the message would be a second, worse model of the same
 change. The other half of that question — a person pressing Commit and
 choosing — is in `routers/git.py`, where the draft goes through a human before
 it becomes a commit.
+
+The pull request section is the other end of that sentence. Committing stops
+where the machine does, and "open a pull request" is the last step of the git
+workflow — the one where the work becomes other people's problem — so the same
+two rules run through it: no shell, and a backend chosen at runtime rather than
+assumed. `gh` when it is installed, because it knows about the operator's
+authentication and about hosts other than github.com; the REST API when it is
+not and a token is in the environment. Nothing here will install either one, and
+nothing here invents a pull request it could not reach.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -51,6 +61,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+import aiohttp
+
+from openmirror.net.transport import transport_for
 
 # Named `_log` rather than `log`, because `log()` below is the git command
 # and the two in one module is a shadowing bug waiting for the first time
@@ -611,3 +626,764 @@ def subject_of(message: str) -> str:
     if len(line) > 72:
         return line[:69] + '...'
     return line
+
+
+# ---------------------------------------------------------------------------
+# Pull requests
+# ---------------------------------------------------------------------------
+#
+# Two backends, chosen per call, and the tradeoff is worth writing down because
+# it is not "prefer the fast one".
+#
+# **`gh` first.** It is the tool a person with a GitHub account has already
+# installed, and it carries the authentication that account has: an OAuth token
+# in a keychain, a hosts.yml entry, an enterprise hostname this module does not
+# know how to guess. Every attempt to be a `gh` is a second implementation of
+# something it does better, and the failure mode of guessing the enterprise
+# API root is a token sent to the wrong host.
+#
+# **The REST API second**, and only from a token in the environment. This is
+# the path for the installs where the CLI is not there — a container, a server
+# with a token in its environment and no shell conveniences. It is deliberately
+# narrow: github.com only, because an API root that is a guess is a credential
+# sent somewhere unvetted.
+#
+# So the API path is the fallback and `gh` is the truth, which is the reverse of
+# what "no new dependencies" usually implies. When neither is available nothing
+# is installed, nothing is prompted for and no pull request is invented; the
+# caller is told the two things that would make it work.
+#
+# Neither backend is given a command line. `gh` is run with an argument list,
+# like git, so a title containing `; rm -rf ~` is a string and not the start of
+# anything — the body goes on stdin rather than into `--body`, for the same
+# reason `commit` uses `-F -`.
+
+GITHUB_API = 'https://api.github.com'
+
+# `gh` is a Node binary that reads a config file before it does anything, and
+# the first run of it on a cold machine is not instant. The API gets a much
+# shorter leash: it is one request, and a turn that hangs on a socket is a turn
+# the person is watching not finish.
+GH_TIMEOUT = 60
+API_TIMEOUT = 30
+
+# GitHub's own limits, so the cap is a real one rather than a preference: a
+# longer title is truncated by the server with no warning, and a body over
+# 65536 characters is refused outright.
+PR_TITLE_LIMIT = 256
+PR_BODY_LIMIT = 60_000
+
+# Enough commits to describe a branch, few enough that a branch with a hundred
+# commits does not produce a thousand lines of its own subjects.
+PR_COMMITS_IN_FILL = 50
+
+NO_BACKEND = (
+    'there is no way to reach GitHub from this session: the GitHub CLI is not on PATH and neither '
+    'GITHUB_TOKEN nor GH_TOKEN is set. Install gh (https://cli.github.com) and run `gh auth login`, '
+    'or set GITHUB_TOKEN to a token with the `repo` scope. Nothing was sent.'
+)
+
+
+class PRUnavailable(GitError):
+    """No backend, so there is no pull request to open or to read.
+
+    Separate from `GitError` because the answer to it is not a retry: it is a
+    person installing something or exporting a variable. The tool turns it into
+    a sentence saying which, rather than letting it read as a failure of the
+    call the model made.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class Remote:
+    """A repository, read out of a remote URL."""
+
+    host: str
+    owner: str
+    name: str
+
+    @property
+    def slug(self) -> str:
+        return f'{self.owner}/{self.name}'
+
+    @property
+    def is_github(self) -> bool:
+        # github.com only, on purpose. An enterprise host has an API root at a
+        # path this module would have to guess, and a credential sent to a
+        # guessed root is a credential sent somewhere unvetted — which is the
+        # one mistake in this file that cannot be undone. `parse_remote` drops
+        # a `www.`; this accepts it anyway for a `Remote` built by hand.
+        return self.host in ('github.com', 'www.github.com')
+
+
+@dataclass(slots=True)
+class PullRequest:
+    """One pull request, from either backend, in one shape.
+
+    A union of gh's `--json` output and the API's is deliberate: what the model
+    reads and what a person sees in a tool card should not depend on which
+    binary happened to be installed.
+    """
+
+    number: int = 0
+    title: str = ''
+    state: str = ''
+    url: str = ''
+    draft: bool = False
+    base: str = ''
+    head: str = ''
+    author: str = ''
+    updated: str = ''
+    checks: str = ''
+    backend: str = ''
+
+    def line(self) -> str:
+        """One pull request on one line — what a list is made of."""
+        state = (self.state or 'open').lower()
+        return f'#{self.number} {self.title} ({state}{", draft" if self.draft else ""}) {self.url}'.rstrip()
+
+    def describe(self) -> str:
+        state = (self.state or 'open').lower()
+        route = f'{self.head} -> {self.base}'.strip(' ->')
+        if self.author:
+            route = f'{route}, opened by {self.author}' if route else f'opened by {self.author}'
+        if self.updated:
+            route = f'{route}, updated {self.updated}' if route else f'updated {self.updated}'
+        lines = [f'#{self.number} {self.title} ({state}{", draft" if self.draft else ""})']
+        if route:
+            lines.append(f'  {route}')
+        if self.checks:
+            lines.append(f'  checks: {self.checks}')
+        if self.url:
+            lines.append(f'  {self.url}')
+        return '\n'.join(lines)
+
+
+# A path segment safe to interpolate into an API URL. Both halves come out of a
+# `.git/config`, which is a file a clone can carry: `../../` or a `?` in there
+# would change which host the token is sent to, and the token is the thing
+# worth not losing.
+_SAFE_SEGMENT = re.compile(r'^[A-Za-z0-9._-]+$')
+
+
+def parse_remote(url: str) -> Remote | None:
+    """Owner and repository out of a `git remote get-url` line, or None.
+
+    Four shapes, and the second is the one that breaks naive parsers:
+
+        git@github.com:acme/demo.git            scp syntax — not a URL at all
+        ssh://git@github.com/acme/demo.git      the same thing, spelled properly
+        https://github.com/acme/demo(.git)/     with or without the suffix
+        git://github.com/acme/demo.git           the ancient form, still in configs
+
+    Credentials in the URL (`https://user:token@…`) are dropped along with the
+    scheme, because they are in the URL and must not end up in an error message
+    or a log line. A local path, a `file://` path, and anything that is not
+    exactly `owner/repo` return None rather than a guess.
+    """
+    raw = (url or '').strip()
+    if not raw:
+        return None
+    if '://' in raw:
+        parsed = urlparse(raw)
+        host, path = parsed.hostname or '', parsed.path
+    elif ':' in raw:
+        # scp syntax. `urlparse` sees no scheme and hands back the whole string,
+        # so the host is everything before the colon and the path everything
+        # after. A Windows path (`C:\src\demo`) takes this branch too, and
+        # falls out below on the segment count.
+        head, _, path = raw.partition(':')
+        host = head.rpartition('@')[2]
+    else:
+        return None
+    if not host:
+        # `file:///srv/git/demo.git` has a path and no host, which would
+        # otherwise parse as a repository called `demo` on a machine called
+        # nothing at all.
+        return None
+    parts = [part for part in path.strip('/').split('/') if part]
+    if len(parts) != 2:
+        return None
+    owner, name = parts
+    if name.endswith('.git'):
+        name = name[: -len('.git')]
+    if not (_SAFE_SEGMENT.match(owner) and _SAFE_SEGMENT.match(name)):
+        return None
+    return Remote(host=host.lower().removeprefix('www.'), owner=owner, name=name)
+
+
+def github_token() -> str:
+    """A GitHub token from the environment, or ''.
+
+    `GH_TOKEN` is here as well as `GITHUB_TOKEN` and not because they are two
+    names for the same thing: `gh auth login` exports the first, so somebody who
+    has set the CLI up is very likely to have it in their environment and no
+    reason to also export the second. The value is never logged, never put in an
+    exception and never returned to a caller that would show it.
+    """
+    for name in ('GITHUB_TOKEN', 'GH_TOKEN'):
+        token = os.environ.get(name, '').strip()
+        if token:
+            return token
+    return ''
+
+
+def gh_exe() -> str | None:
+    """The `gh` binary, or None. No exception: absence is a decision, not a fault."""
+    return shutil.which('gh')
+
+
+def pr_backend(remote: Remote) -> str:
+    """`'gh'`, `'api'`, or `''` when there is no way through.
+
+    Never raises and never prompts. A tool that stops to ask a person to log in
+    to a website mid-turn is a tool that hangs, and the answer belongs in the
+    message the model reads and relays.
+    """
+    if gh_exe():
+        return 'gh'
+    return 'api' if remote.is_github and github_token() else ''
+
+
+async def remote(cwd: Path) -> tuple[str, Remote]:
+    """The remote to work against, and what it points at.
+
+    `origin` first and then whatever else there is, so a repository with an
+    `upstream` and an `origin` fork is opened against the fork — which is the
+    remote the branch was pushed to and the one a reviewer is looking at.
+    """
+    _, listed, _ = await run(['remote'], cwd, check=False)
+    names = [line.strip() for line in listed.splitlines() if line.strip()]
+    if not names:
+        raise GitError(
+            'there is no remote configured, so there is nowhere to open a pull request. '
+            'Add one and push the branch to it first.'
+        )
+    ordered = (['origin'] if 'origin' in names else []) + [n for n in names if n != 'origin']
+    for name in ordered:
+        _, url, _ = await run(['remote', 'get-url', name], cwd, check=False)
+        found = parse_remote(url)
+        if found:
+            return name, found
+    _, url, _ = await run(['remote', 'get-url', ordered[0]], cwd, check=False)
+    where = url.strip() or 'nothing'
+    raise GitError(
+        f'{ordered[0]} points at {where}, which is not a GitHub repository. A pull request can only '
+        'be opened against one; for a self-hosted remote, install gh and log in to that host with it.'
+    )
+
+
+async def default_branch(cwd: Path, remote_name: str = 'origin') -> str:
+    """The branch this repository merges into, or '' when it is not recorded.
+
+    Read from `refs/remotes/<remote>/HEAD` rather than guessed: `main` has been
+    the answer often enough to be muscle memory and `master` is still the answer
+    in a great many repositories, and a pull request aimed at the wrong base is
+    a pull request against itself.
+    """
+    code, out, _ = await run(
+        ['symbolic-ref', '--quiet', '--short', f'refs/remotes/{remote_name}/HEAD'], cwd, check=False
+    )
+    # `removeprefix` and not a split: a default branch may itself contain a
+    # slash, and taking everything after the last one would name a different
+    # branch than the one git just printed.
+    return out.strip().removeprefix(f'{remote_name}/') if code == 0 else ''
+
+
+async def commits_since(cwd: Path, base: str, remote_name: str = 'origin') -> list[str]:
+    """Subjects of the commits on this branch that `base` does not have.
+
+    Both spellings of the base are tried because a base is usually named the
+    way a person says it (`main`) and only exists locally as `origin/main`. An
+    empty list means "could not tell", and the caller says so rather than
+    describing a diff nobody can verify.
+    """
+    merge = ''
+    for candidate in (base, f'{remote_name}/{base}'):
+        code, out, _ = await run(['merge-base', 'HEAD', candidate], cwd, check=False)
+        if code == 0 and out.strip():
+            merge = out.strip()
+            break
+    if not merge:
+        return []
+    _, listed, _ = await run(
+        ['--no-pager', 'log', f'-{PR_COMMITS_IN_FILL}', '--no-merges', '--format=%s', f'{merge}..HEAD'],
+        cwd,
+    )
+    return [line.strip() for line in listed.splitlines() if line.strip()]
+
+
+def _body_from_log(commits: list[str]) -> str:
+    """A pull request body made of the commits it contains.
+
+    A heading for more than one and none for exactly one, because a single
+    commit's subject *is* the description and a list of one under a heading
+    called "commits" reads like padding.
+    """
+    if len(commits) == 1:
+        return commits[0]
+    return '## Commits\n\n' + '\n'.join(f'- {subject}' for subject in commits)
+
+
+def _clean_title(value: str) -> str:
+    """One line, trimmed, capped at what GitHub accepts.
+
+    Newlines folded to spaces rather than kept: a title with a blank line in it
+    is a body, and GitHub renders the second line somewhere nobody is looking.
+    """
+    title = ' '.join((value or '').split())
+    if len(title) > PR_TITLE_LIMIT:
+        title = title[: PR_TITLE_LIMIT - 3] + '...'
+    return title
+
+
+async def _gh(args: list[str], cwd: Path, *, stdin: str | None = None) -> tuple[int, str, str]:
+    """Run the GitHub CLI: an argument list, never a string. See the module docstring.
+
+    `GH_PROMPT_DISABLED` is the load-bearing part of the environment. Without
+    it `gh` will try to finish an authentication flow — including opening a
+    browser — from inside a tool call, on somebody's machine, with nothing on
+    screen to explain why a window appeared.
+    """
+    exe = gh_exe()
+    if not exe:
+        raise PRUnavailable(NO_BACKEND)
+    kwargs: dict[str, Any] = {}
+    if os.name == 'nt':
+        kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs['start_new_session'] = True
+    env = {
+        **os.environ,
+        'GH_PROMPT_DISABLED': '1',
+        'GH_PAGER': 'cat',
+        'GIT_TERMINAL_PROMPT': '0',
+        'NO_COLOR': '1',
+    }
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe,
+            *args,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd),
+            env=env,
+            **kwargs,
+        )
+    except OSError as exc:
+        raise GitError(f'could not run gh: {exc}') from exc
+    try:
+        async with asyncio.timeout(GH_TIMEOUT):
+            out, err = await proc.communicate(stdin.encode('utf-8') if stdin is not None else None)
+    except TimeoutError as exc:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise GitError(f'gh {args[0]} timed out after {GH_TIMEOUT}s') from exc
+    return proc.returncode or 0, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
+
+
+async def _api(
+    method: str,
+    path: str,
+    token: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    params: dict[str, str] | None = None,
+) -> tuple[int, Any]:
+    """One GitHub API call. Returns `(status, parsed)`; 404 comes back as itself.
+
+    The transport is a fresh one rather than a provider's, and Tor is off. The
+    toggle in this install is about where model traffic goes, and inheriting it
+    here would mean a setting chosen for a GPU connection silently deciding
+    where a pull request is opened from. `openmirror/agent/tools/web.py` argues
+    the same point for the open web; the difference is that this reaches
+    api.github.com rather than whatever it was told to read.
+    """
+    headers = {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': f'Bearer {token}',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'openmirror',
+    }
+    try:
+        async with transport_for(timeout=API_TIMEOUT).session() as client:
+            async with client.request(
+                method, f'{GITHUB_API}{path}', headers=headers, json=payload, params=params
+            ) as response:
+                text = await response.text()
+                if response.status == 404:
+                    return 404, None
+                if response.status == 401:
+                    # The one case where saying "unauthorised" without more is
+                    # useless, because the usual cause is a token with no repo
+                    # scope, and the fix is a different token rather than a
+                    # retry. The token itself is never in the message.
+                    raise GitError('GitHub rejected the token (401). A fine-grained token needs the `repo` scope.')
+                if response.status >= 400:
+                    raise GitError(f'GitHub said {response.status}: {_api_error(text)}')
+                try:
+                    return response.status, json.loads(text) if text else None
+                except ValueError as exc:
+                    raise GitError(f'GitHub sent back something that is not JSON ({exc})') from exc
+    except (TimeoutError, OSError, aiohttp.ClientError) as exc:
+        raise GitError(f'could not reach GitHub ({exc})') from exc
+
+
+def _api_error(text: str) -> str:
+    """GitHub's own message, which names the actual problem, or the raw body."""
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return (text or 'no detail').strip()[:400]
+    if isinstance(parsed, dict) and parsed.get('message'):
+        detail = str(parsed['message'])
+        errors = parsed.get('errors')
+        if isinstance(errors, list) and errors:
+            fields = sorted({str(e.get('field') or e.get('code')) for e in errors if isinstance(e, dict)})
+            if fields:
+                detail += f' ({", ".join(f for f in fields if f)})'
+        return detail[:400]
+    return (text or 'no detail').strip()[:400]
+
+
+def _checks(counts: dict[str, int]) -> str:
+    """`2 failed, 5 passed`, worst first, with the zeroes dropped."""
+    order = ('failed', 'pending', 'skipped', 'passed')
+    bits = [f'{counts[key]} {key}' for key in order if counts.get(key)]
+    return ', '.join(bits)
+
+
+def _tally(conclusions: list[str]) -> str:
+    counts: dict[str, int] = {}
+    for conclusion in conclusions:
+        counts[conclusion] = counts.get(conclusion, 0) + 1
+    return _checks(counts)
+
+
+_PENDING = ('', 'queued', 'in_progress', 'pending', 'expected', 'requested', 'waiting')
+_SKIPPED = ('skipped', 'neutral')
+
+
+def _conclusion(raw: Any) -> str:
+    """One of `passed` / `failed` / `pending` / `skipped`, from any of the
+    several vocabularies GitHub uses for the same question.
+
+    An unrecognised value counts as *pending* rather than as a pass, because
+    the cost of a check summary that says "all green" when one was skipped is a
+    merge nobody tested. An empty one is pending for the same reason: a check
+    that has not reported yet has not passed.
+    """
+    state = str(raw or '').strip().lower()
+    if state in _PENDING:
+        return 'pending'
+    if state == 'success':
+        return 'passed'
+    return 'skipped' if state in _SKIPPED else 'failed'
+
+
+def _checks_from_gh(rollup: Any) -> str:
+    """gh reports a mixed list of check runs and commit statuses in one field,
+    which is why this looks at three keys: a check run has a `conclusion`, a
+    commit status has a `state`, and either may still be running."""
+    if not isinstance(rollup, list) or not rollup:
+        return ''
+    verdicts = [
+        _conclusion(entry.get('conclusion') or entry.get('state') or entry.get('status'))
+        for entry in rollup
+        if isinstance(entry, dict)
+    ]
+    return _tally(verdicts)
+
+
+def _checks_from_api(check_runs: Any) -> str:
+    """The same tally from `/check-runs`, where the outcome is a `conclusion`."""
+    if not isinstance(check_runs, list) or not check_runs:
+        return ''
+    verdicts = [
+        _conclusion(entry.get('conclusion') or entry.get('status'))
+        for entry in check_runs
+        if isinstance(entry, dict)
+    ]
+    return _tally(verdicts)
+
+
+def _pr_from_gh(raw: Any) -> PullRequest:
+    data = raw if isinstance(raw, dict) else {}
+    author = data.get('author')
+    return PullRequest(
+        number=int(data.get('number') or 0),
+        title=str(data.get('title') or ''),
+        state=str(data.get('state') or ''),
+        url=str(data.get('url') or ''),
+        draft=bool(data.get('isDraft')),
+        base=str(data.get('baseRefName') or ''),
+        head=str(data.get('headRefName') or ''),
+        author=str(author.get('login') or '') if isinstance(author, dict) else str(author or ''),
+        updated=str(data.get('updatedAt') or '')[:10],
+        checks=_checks_from_gh(data.get('statusCheckRollup')),
+        backend='gh',
+    )
+
+
+def _pr_from_api(raw: Any) -> PullRequest:
+    data = raw if isinstance(raw, dict) else {}
+    base, head = data.get('base'), data.get('head')
+    user = data.get('user')
+    return PullRequest(
+        number=int(data.get('number') or 0),
+        title=str(data.get('title') or ''),
+        state=str(data.get('state') or ''),
+        url=str(data.get('html_url') or ''),
+        draft=bool(data.get('draft')),
+        base=str(base.get('ref') or '') if isinstance(base, dict) else '',
+        head=str(head.get('ref') or '') if isinstance(head, dict) else '',
+        author=str(user.get('login') or '') if isinstance(user, dict) else '',
+        updated=str(data.get('updated_at') or '')[:10],
+        backend='api',
+    )
+
+
+_VIEW_FIELDS = 'number,title,state,url,isDraft,baseRefName,headRefName,author,updatedAt'
+# Checks come free in the same call, on every version of gh that has them. An
+# older one refuses the whole command over an unknown field rather than ignoring
+# it, so the retry below is a real path and not a precaution.
+_VIEW_FIELDS_WITH_CHECKS = f'{_VIEW_FIELDS},statusCheckRollup'
+# gh's two ways of saying there is nothing here, and both are needed: whether
+# it looked for an open one or for any at all changes which sentence it uses.
+_NO_PR = ('no pull request', 'no open pull request')
+
+
+def _is_absent(*outputs: str) -> bool:
+    """Whether gh is saying "there isn't one" rather than "that failed".
+
+    The distinction is the whole value of a view: told a pull request exists when
+    it does not, a model goes on to tell a person their work is under review.
+    """
+    text = ' '.join(outputs).lower()
+    return any(marker in text for marker in _NO_PR)
+
+
+async def pr_view(cwd: Path, number: int = 0) -> PullRequest | None:
+    """The pull request for this branch, or one by number. None when there is none."""
+    _, repo = await remote(cwd)
+    backend = pr_backend(repo)
+    if not backend:
+        raise PRUnavailable(NO_BACKEND)
+    if backend == 'gh':
+        args = ['pr', 'view', *([str(number)] if number > 0 else []), '--repo', repo.slug]
+        code, out, err = await _gh([*args, '--json', _VIEW_FIELDS_WITH_CHECKS], cwd)
+        if code != 0 and 'statuscheckrollup' in f'{out}{err}'.lower():
+            code, out, err = await _gh([*args, '--json', _VIEW_FIELDS], cwd)
+        if code != 0:
+            if _is_absent(out, err):
+                return None
+            raise GitError((err or out or 'gh pr view failed').strip())
+        try:
+            return _pr_from_gh(json.loads(out))
+        except ValueError as exc:
+            raise GitError(f'gh returned something that is not JSON ({exc})') from exc
+
+    token = github_token()
+    if number > 0:
+        _, raw = await _api('GET', f'/repos/{repo.slug}/pulls/{number}', token)
+        if not raw:
+            return None
+        pull = _pr_from_api(raw)
+        pull.checks = await _api_checks(token, repo, raw)
+        return pull
+    branch = await current_branch(cwd)
+    _, found = await _api(
+        'GET',
+        f'/repos/{repo.slug}/pulls',
+        token,
+        params={'state': 'all', 'head': f'{repo.owner}:{branch}', 'per_page': '1'},
+    )
+    first = found[0] if isinstance(found, list) and found else None
+    if not first:
+        return None
+    pull = _pr_from_api(first)
+    pull.checks = await _api_checks(token, repo, first)
+    return pull
+
+
+async def _api_checks(token: str, repo: Remote, raw: Any) -> str:
+    """One extra request for the checks, and silence if it does not work.
+
+    Check runs are where CI is; a repository using only commit statuses is
+    reported as having none, which is a thing the reader can see and correct,
+    rather than a second request that fails on every view.
+    """
+    head = raw.get('head') if isinstance(raw, dict) else None
+    sha = str(head.get('sha') or '') if isinstance(head, dict) else ''
+    if not sha:
+        return ''
+    try:
+        _, found = await _api('GET', f'/repos/{repo.slug}/commits/{sha}/check-runs', token)
+    except GitError as exc:
+        _log.debug('no check runs for %s: %s', repo.slug, exc)
+        return ''
+    return _checks_from_api(found.get('check_runs') if isinstance(found, dict) else None)
+
+
+async def pr_list(cwd: Path, limit: int = 10) -> list[PullRequest]:
+    """Open pull requests, newest activity first. Empty when there are none."""
+    _, repo = await remote(cwd)
+    backend = pr_backend(repo)
+    if not backend:
+        raise PRUnavailable(NO_BACKEND)
+    count = max(1, min(int(limit or 10), 100))
+    if backend == 'gh':
+        code, out, err = await _gh(
+            ['pr', 'list', '--repo', repo.slug, '--state', 'open', '--limit', str(count), '--json', _VIEW_FIELDS],
+            cwd,
+        )
+        if code != 0:
+            raise GitError((err or out or 'gh pr list failed').strip())
+        try:
+            raw = json.loads(out or '[]')
+        except ValueError as exc:
+            raise GitError(f'gh returned something that is not JSON ({exc})') from exc
+        return [_pr_from_gh(entry) for entry in raw if isinstance(entry, dict)] if isinstance(raw, list) else []
+    _, found = await _api(
+        'GET', f'/repos/{repo.slug}/pulls', github_token(), params={'state': 'open', 'per_page': str(count)}
+    )
+    return [_pr_from_api(entry) for entry in found if isinstance(entry, dict)] if isinstance(found, list) else []
+
+
+async def pr_create(
+    cwd: Path,
+    *,
+    title: str,
+    body: str = '',
+    base: str = '',
+    draft: bool = False,
+    fill: bool = False,
+) -> PullRequest:
+    """Open a pull request from the current branch, and say what it made.
+
+    Four things happen in a fixed order, and each of the first three is a thing
+    that is much better to refuse than to discover halfway through:
+
+    1. **Is there any way to reach GitHub at all.** Checked before anything
+       else, so the answer is "install gh" rather than a half-finished push to a
+       remote that was never going to be reviewed.
+    2. **Is the working tree committed.** Uncommitted work is not in the pull
+       request and is not in the branch either, so opening one now produces a
+       PR that is quietly missing whatever was in the editor. Nothing is
+       committed here to fix that up: an agent that stages and commits a
+       stranger's working tree because it was asked to open a pull request is
+       the worst thing this tool could do, and the refusal costs one turn.
+    3. **Push, if the branch has nowhere to be pushed to.** `push` is not run as
+       a separate action first, because the person approving this said "open a
+       pull request" and a PR cannot exist without the branch being somewhere
+       reviewable. It is a push of a branch that is already committed, to the
+       remote the branch is already tracking.
+    4. **Open it**, through whichever backend is there.
+    """
+    remote_name, repo = await remote(cwd)
+    backend = pr_backend(repo)
+    if not backend:
+        raise PRUnavailable(NO_BACKEND)
+
+    state = await status(cwd)
+    if state.detached or not state.branch:
+        raise GitError(
+            'HEAD is detached, so there is no branch for a pull request. Check one out and try again.'
+        )
+    if not state.clean:
+        paths = ', '.join(change.path for change in state.changes[:20])
+        more = f', and {len(state.changes) - 20} more' if len(state.changes) > 20 else ''
+        raise GitError(
+            f'there are uncommitted changes, which would not be part of the pull request: {paths}{more}. '
+            'Commit them (git action "commit") or stash them, then open it — nothing was staged, pushed or sent.'
+        )
+
+    target = (base or '').strip() or await default_branch(cwd, remote_name)
+    if target and target == state.branch:
+        raise GitError(
+            f'{state.branch} is the branch it would merge into, so a pull request would compare it with '
+            'itself. Create a branch, commit there, and open the pull request from that.'
+        )
+
+    if not (body or '').strip() and fill:
+        # A body written from the commits is nearly always the right one, and
+        # an empty box is nearly always the reason a pull request sits open
+        # with a comment asking what it does. What it must never be is a
+        # description of commits it cannot see, so the log is read from the
+        # merge base rather than from HEAD.
+        if not target:
+            raise GitError(
+                'this repository does not record which branch it merges into, so there is nothing to write '
+                'a body from. Say what the body should say, or name the base with "base".'
+            )
+        subjects = await commits_since(cwd, target, remote_name)
+        if not subjects:
+            raise GitError(
+                f'nothing on {state.branch} that is not already on {target}, so there is no pull request to '
+                'open and no body to write. Push the commits first.'
+            )
+        body = _body_from_log(subjects)
+    body = body.strip()[:PR_BODY_LIMIT]
+    subject = _clean_title(title)
+    if not subject:
+        raise GitError('a pull request needs a title — write the one line that says what it changes')
+
+    if not state.upstream:
+        await run(['push', '--set-upstream', remote_name, state.branch], cwd)
+
+    if backend == 'gh':
+        # Every value the model supplied is its own argv item, and the body is
+        # on stdin rather than in an argument. A title of `"; rm -rf ~"` is a
+        # title; it cannot become a second command, because there is no second
+        # command — see the module docstring.
+        args = ['pr', 'create', '--repo', repo.slug, '--head', state.branch, '--title', subject]
+        if target:
+            args += ['--base', target]
+        if draft:
+            args.append('--draft')
+        # `--body-file -` even when the body is empty: without a body gh opens
+        # an editor, which is a process with a terminal attached to a tool call.
+        code, out, err = await _gh([*args, '--body-file', '-'], cwd, stdin=body)
+        if code != 0:
+            raise GitError((err or out or 'gh pr create refused').strip())
+        url = (out or '').strip().splitlines()[-1].strip() if out.strip() else ''
+        # gh prints the URL of what it opened, and the number is the last thing
+        # in it. Anything else on stdout is not a URL and is not a number.
+        tail = url.rstrip('/').rsplit('/', 1)[-1]
+        number = int(tail) if tail.isdigit() else 0
+        if not number:
+            return PullRequest(title=subject, url=url, draft=draft, base=target, head=state.branch, backend='gh')
+        # One more call for the state and the checks, so what comes back is the
+        # same shape as a view and the model does not have to reason about a
+        # bare URL.
+        opened = await pr_view(cwd, number)
+        if opened is None:
+            return PullRequest(number=number, title=subject, url=url, base=target, head=state.branch, backend='gh')
+        opened.draft = draft or opened.draft
+        return opened
+
+    token = github_token()
+    if not target:
+        # No `refs/remotes/<remote>/HEAD` locally and no `base` given. One
+        # request for it, rather than a guess: the pull request API requires the
+        # base and the wrong one is a pull request against a branch nobody is
+        # reviewing.
+        _, meta = await _api('GET', f'/repos/{repo.slug}', token)
+        target = str(meta.get('default_branch') or '') if isinstance(meta, dict) else ''
+        if not target:
+            raise GitError(
+                f'could not work out which branch {repo.slug} merges into. Pass "base" and say which.'
+            )
+    _, raw = await _api(
+        'POST',
+        f'/repos/{repo.slug}/pulls',
+        token,
+        payload={'title': subject, 'head': state.branch, 'base': target, 'body': body, 'draft': bool(draft)},
+    )
+    if not isinstance(raw, dict):
+        raise GitError('GitHub accepted the request but sent nothing back, so there is no link to report')
+    return _pr_from_api(raw)

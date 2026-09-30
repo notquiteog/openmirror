@@ -20,11 +20,11 @@ ways, all of which show up in practice rather than in theory:
 What is deliberately missing: `reset --hard`, `clean -f`, `rebase`, and
 `filter-branch`. Each is one `shell` call away, each is already graded
 `destructive` there, and a first-class tool is the wrong place to keep the
-buttons that lose work. `push` is present and is the only action here that
-reaches outside the machine; it grades `network`, so it is asked about in
-every mode short of `trusted`, including `unrestricted`'s neighbour
-`auto_edit` — a commit nobody asked for is a local mistake, a push is a
-message to other people.
+buttons that lose work. `push` and the three pull-request actions are the ones
+that reach outside the machine, and they are graded above everything local for
+the same reason the rest of this file is careful: a commit nobody asked for is
+a local mistake that `git reset` undoes, and a pull request is a message to
+other people that nobody can take back.
 """
 
 from __future__ import annotations
@@ -37,12 +37,36 @@ from openmirror.protocol.agent import Risk
 
 ACTIONS = (
     'status', 'diff', 'log', 'show', 'stage', 'unstage', 'commit', 'branch', 'checkout', 'push',
+    'pr_create', 'pr_view', 'pr_list',
 )
 
 # Which grade each action earns. Read is observation; the four that change the
 # index or the branch are `write`, because every one of them is undoable and
-# none of them is visible to anyone else; `push` is the only outward-facing
-# one.
+# none of them is visible to anyone else.
+#
+# `push` is `network`: it reaches another machine, and it asks in every mode
+# short of `trusted` — including `auto_edit`, where a local commit runs without
+# a question, because a commit is a change to the operator's own work and a
+# push is a change to somebody else's.
+#
+# `pr_create` is `message`, and not `network` like the push above it. The
+# difference is not the socket, it is the audience: opening a pull request tells
+# reviewers — and, on a public repository, the world — that this person is
+# asking for their code to be read, under their name, and it cannot be recalled
+# once sent. That is the same category as sending mail as them, and the
+# codebase already says what that category is for: "'let it do what it likes to
+# my computer' has never meant 'correspond on my behalf'". So it is asked in
+# *every* mode, including `unrestricted`, and refused outright in `read_only`
+# and `plan` rather than offered as a yes/no.
+#
+# It also means `allow_messages=false` switches pull requests off along with
+# mail. That is the right way round: the flag means "must not speak to anyone on
+# my behalf", and an agent that can still file a public request under somebody's
+# name has not been given that.
+#
+# `pr_view` and `pr_list` are `read`. They open a socket, which is the part that
+# normally makes a call worth asking about, but nothing leaves the machine that
+# was not already there: they are a GET of data this session could read by hand.
 RISK: dict[str, Risk] = {
     'status': Risk.READ,
     'diff': Risk.READ,
@@ -54,6 +78,9 @@ RISK: dict[str, Risk] = {
     'commit': Risk.WRITE,
     'checkout': Risk.WRITE,
     'push': Risk.NETWORK,
+    'pr_create': Risk.MESSAGE,
+    'pr_view': Risk.READ,
+    'pr_list': Risk.READ,
 }
 
 
@@ -71,7 +98,20 @@ class GitTool(Tool):
         'read the diff first, then write one line saying what changed and why, in the '
         'imperative and under 72 characters. If the person gave you words for the message, use '
         'those instead. It does not stage anything itself. '
-        'action "push" is the only one other people see, and it needs approval in most modes. '
+        'action "push" sends the current branch to its remote, and it needs approval in most modes. '
+        'The order that finishes the job is stage, commit, push, pr_create — do not skip the '
+        'commit, because a pull request is made of commits and an uncommitted change is in '
+        'neither. '
+        'action "pr_create" opens a pull request from the current branch; give it a title, and a '
+        'body of a few sentences saying what the change does and why. Set "fill" and leave the '
+        'body out and it will write one from the commits since the merge base, which is usually '
+        'the honest first draft. It refuses when the working tree is dirty rather than committing '
+        'for you, and it pushes the branch first if it has never been pushed. It needs a person\'s '
+        'approval in every mode, and it needs either the `gh` command line tool or a GITHUB_TOKEN '
+        'in the environment — if neither is there it will tell you so. '
+        'action "pr_view" shows this branch\'s pull request, or one you give a "number". '
+        'action "pr_list" shows the open ones. Both say plainly when they cannot be reached rather '
+        'than guessing. '
         'There is no "reset" or "clean" here on purpose — say so rather than reaching for the '
         'shell to discard work.'
     )
@@ -108,10 +148,38 @@ class GitTool(Tool):
                 'type': 'string',
                 'description': 'For log/show: a commit-ish. Defaults to HEAD.',
             },
-            'limit': {'type': 'integer', 'description': 'For log. Default 15.'},
+            'limit': {'type': 'integer', 'description': 'For log, and for pr_list. Default 15, and 10.'},
             'stat': {
                 'type': 'boolean',
                 'description': 'For branch: include the upstream and ahead/behind. Default true.',
+            },
+            'title': {
+                'type': 'string',
+                'description': 'For pr_create. Required. One line, in the imperative, saying what the '
+                               'change does — not a restatement of the branch name.',
+            },
+            'body': {
+                'type': 'string',
+                'description': 'For pr_create. Markdown is fine. Say what the change does and why, and '
+                               'anything a reviewer could not work out from the diff alone.',
+            },
+            'base': {
+                'type': 'string',
+                'description': 'For pr_create: the branch to merge into. Leave it out for the repository\'s '
+                               'own default branch, which is almost always right.',
+            },
+            'draft': {
+                'type': 'boolean',
+                'description': 'For pr_create: open it as a draft. Default false.',
+            },
+            'fill': {
+                'type': 'boolean',
+                'description': 'For pr_create: with no body, write one from the commits since the merge '
+                               'base. A starting draft to edit, not a finished description.',
+            },
+            'number': {
+                'type': 'integer',
+                'description': 'For pr_view: which pull request. Leave it out for the current branch\'s.',
             },
         },
         'required': ['action'],
@@ -164,6 +232,31 @@ class GitTool(Tool):
                 risk=risk,
                 summary=f'push {", ".join(paths) if paths else "the current branch"} to the remote',
             )
+
+        if action == 'pr_create':
+            # Argument-only, like every other action here: the approval
+            # decision is made from what the model asked for, before anything
+            # has happened, and reaching into the repository from `assess` to
+            # find the branch name would make the prompt depend on a subprocess
+            # that might not be there. The title is the argument worth showing
+            # — it is the sentence a reviewer will read on the other side.
+            title = core.subject_of(str(args.get('title') or ''))
+            if not title:
+                return Assessment(
+                    risk=risk,
+                    summary='',
+                    invalid='a pull request needs a title — write the one line that says what it changes',
+                )
+            into = str(args.get('base') or '').strip()
+            return Assessment(
+                risk=risk,
+                summary=f'open a pull request "{title}"{f" into {into}" if into else ""} and notify reviewers',
+            )
+
+        if action == 'pr_view':
+            number = _as_int(args.get('number'))
+            what = f'pull request #{number}' if number > 0 else "this branch's pull request"
+            return Assessment(risk=risk, summary=f'view {what}')
 
         if action == 'checkout':
             what = str(args.get('path') or args.get('ref') or '').strip()
@@ -305,8 +398,81 @@ class GitTool(Tool):
                     content=(out or err or f'Pushed {what}.').strip(),
                     display={'command': f'git push {" ".join(paths)}'.strip()},
                 )
+
+            if action == 'pr_create':
+                pull = await core.pr_create(
+                    root,
+                    title=str(args.get('title') or ''),
+                    body=str(args.get('body') or ''),
+                    base=str(args.get('base') or ''),
+                    draft=bool(args.get('draft')),
+                    fill=bool(args.get('fill')),
+                )
+                return Output(content=f'Opened pull request {pull.describe()}', display=_pr_display(pull))
+
+            if action == 'pr_view':
+                number = _as_int(args.get('number'))
+                pull = await core.pr_view(root, number)
+                if pull is None:
+                    which = f'#{number}' if number > 0 else 'on this branch'
+                    return Output(
+                        content=(
+                            f'There is no pull request {which}. One is opened with action "pr_create", which '
+                            'needs a title, a committed working tree, and a branch that has been pushed.'
+                        ),
+                        display={'pr': False, 'number': number},
+                    )
+                return Output(content=pull.describe(), display=_pr_display(pull))
+
+            if action == 'pr_list':
+                pulls = await core.pr_list(root, _as_int(args.get('limit')) or 10)
+                if not pulls:
+                    return Output(
+                        content=f'There are no open pull requests in {root.name or "this repository"}.',
+                        display={'prs': []},
+                    )
+                return Output(
+                    content='\n'.join(f'* {pull.line()}' for pull in pulls),
+                    display={'prs': [_pr_display(pull) for pull in pulls]},
+                )
+        except core.PRUnavailable as exc:
+            # Not a failure of the call, and not retryable: the session has no
+            # way to reach GitHub and the answer is a person installing gh or
+            # exporting a token. A ToolError here would be read as "try
+            # something else" and the model would try the shell.
+            return Output(content=str(exc), display={'pr': False, 'action': action, 'why': str(exc)})
         except core.GitError as exc:
             # Expected: git said no, and its own words are the useful part.
             raise ToolError(str(exc)) from exc
 
         raise ToolError(f'{action}: not handled')
+
+
+def _as_int(value: Any) -> int:
+    """An integer argument, or 0.
+
+    A model asked for "pull request number" will sometimes answer with a
+    string, and a `ValueError` escaping from here would end the turn over a
+    field that has an obvious sensible default.
+    """
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pr_display(pull: core.PullRequest) -> dict[str, Any]:
+    """What a tool card renders, rather than what the model reads."""
+    return {
+        'pr': True,
+        'number': pull.number,
+        'title': pull.title,
+        'state': pull.state,
+        'url': pull.url,
+        'draft': pull.draft,
+        'base': pull.base,
+        'head': pull.head,
+        'author': pull.author,
+        'checks': pull.checks,
+        'backend': pull.backend,
+    }

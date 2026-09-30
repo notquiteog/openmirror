@@ -6,6 +6,14 @@ UTF-16 code units. Nobody should have to count columns, and a small model
 cannot. So the tool takes the line as `read_file` numbers it and the *name*
 on that line, and works out the rest; `column` is there for the rare line
 with the same name on it twice.
+
+Three of the operations write: asking a server to fix a line, to rename a
+symbol it knows is defined in nine files, and to format a file. Those are
+edits, and they are made here — by a tool the policy has already graded,
+approved, checkpointed and diffed like any other — rather than by the server.
+The protocol's way around that, `workspace/applyEdit`, is answered
+`applied: false` on the way past, and a fix that comes back as a command to
+run inside the server is refused for the same reason.
 """
 
 from __future__ import annotations
@@ -14,15 +22,16 @@ import re
 from pathlib import Path
 from typing import Any
 
-from openmirror.agent.lsp import LspError, LspPool, uri_to_path
+from openmirror.agent.lsp import CodeAction, LspError, LspPool, WorkspaceEdit, apply_edit, uri_to_path
 from openmirror.agent.tools.base import Assessment, Output, Tool, ToolContext, ToolError, resolve_in_root, truncate
+from openmirror.agent.tools.files import _diff
 from openmirror.protocol.agent import Risk
 
 OPERATIONS = (
     'definition', 'references', 'hover', 'implementation', 'type_definition',
-    'symbols', 'search', 'diagnostics',
+    'symbols', 'search', 'diagnostics', 'code_action', 'rename', 'format',
 )
-POSITIONAL = ('definition', 'references', 'hover', 'implementation', 'type_definition')
+POSITIONAL = ('definition', 'references', 'hover', 'implementation', 'type_definition', 'code_action', 'rename')
 METHODS = {
     'definition': 'textDocument/definition',
     'references': 'textDocument/references',
@@ -31,7 +40,14 @@ METHODS = {
     'type_definition': 'textDocument/typeDefinition',
     'symbols': 'textDocument/documentSymbol',
     'search': 'workspace/symbol',
+    'code_action': 'textDocument/codeAction',
+    'rename': 'textDocument/rename',
+    'format': 'textDocument/formatting',
 }
+# A range is a different method, with a different capability, and a server
+# that formats a file but not a range answers one and not the other. In the
+# order `supports()` takes them: the method, then the capability it declares.
+RANGE_METHOD = ('textDocument/rangeFormatting', 'documentRangeFormattingProvider')
 # What a server has to have said it does, for each question. Not every server
 # does everything — pylsp has no project-wide search — and the question
 # unasked, with something to do instead, beats the server's own error.
@@ -43,13 +59,24 @@ CAPABILITIES = {
     'type_definition': 'typeDefinitionProvider',
     'symbols': 'documentSymbolProvider',
     'search': 'workspaceSymbolProvider',
+    'code_action': 'codeActionProvider',
+    'rename': 'renameProvider',
+    'format': 'documentFormattingProvider',
 }
 INSTEAD = {
     'search': 'Use grep for the name, or ask for its definition from somewhere it is used.',
     'implementation': 'Ask for its definition and references instead.',
     'type_definition': 'Ask for hover instead, which usually says the type.',
     'symbols': 'Use outline instead.',
+    'code_action': 'There is no offered fix for that range; make the change yourself.',
+    'rename': 'This server will not rename that, which usually means it does not know the symbol. '
+              'Edit the name where it is defined, or ask for its references first.',
+    'format': 'Run the project\'s own formatter through shell instead — ruff format, prettier, gofmt.',
 }
+# The operations that change files whatever the arguments say. `code_action` is
+# not among them: listing what is on offer is a read, and only choosing one is
+# a write. That difference is the whole reason the op takes an argument.
+WRITE_OPS = frozenset({'rename', 'format'})
 KINDS = {
     1: 'file', 2: 'module', 3: 'namespace', 4: 'package', 5: 'class', 6: 'method', 7: 'property',
     8: 'field', 9: 'constructor', 10: 'enum', 11: 'interface', 12: 'function', 13: 'variable',
@@ -64,7 +91,11 @@ DESCRIPTION = (
     'type and documentation, what a file declares, a symbol anywhere in the project, or the errors '
     'the compiler sees in a file. Better than grep for anything with a name — it knows which '
     '`open` is which. Point at a symbol with `path`, `line` (as read_file numbers it) and `symbol`, '
-    'the name on that line.'
+    'the name on that line. '
+    'It can also change files, using the project\'s own configuration: code_action lists the fixes '
+    'the server offers for a line and applies one when you pass `action`, rename renames a symbol '
+    'wherever it is defined and used, and format runs the configured formatter over a file. Those '
+    'three are graded as file writes, so a planning or read-only session cannot use them.'
 )
 
 
@@ -90,6 +121,49 @@ def _position(path: Path, args: dict[str, Any]) -> dict[str, int]:
     else:
         at = len(text) - len(text.lstrip())
     return {'line': number - 1, 'character': _utf16(text[:at])}
+
+
+def _at(args: dict[str, Any]) -> str:
+    """What a positional call points at, the way the summary says it."""
+    return str(args.get('symbol') or f'line {args.get("line")}')
+
+
+def _range(path: Path, args: dict[str, Any]) -> tuple[dict[str, int], dict[str, int]]:
+    """A range to ask about, from a line and optionally an end line.
+
+    A range starts at column 0 unless a symbol or a column was given: a span
+    of a document is not a guess at the first non-space character, and a
+    formatter asked for lines 10 to 20 should not be handed one that begins at
+    column 12. With no line at all it is the whole file, which is what
+    `textDocument/formatting` wants anyway.
+    """
+    if not args.get('line'):
+        return {'line': 0, 'character': 0}, {'line': 0, 'character': 0}
+    found = _position(path, args)
+    start = found if (args.get('symbol') or args.get('column')) else {'line': found['line'], 'character': 0}
+    end = {'line': max(int(args['end_line']) - 1, start['line']), 'character': 0} if args.get('end_line') else start
+    return start, end
+
+
+def _choose(actions: list[CodeAction], wanted: str) -> CodeAction:
+    """The action a model meant, from the number printed in the listing.
+
+    A number first, because that is what it was shown. Then the title, loosely
+    and case-insensitively, because a model asked to name a fix will
+    paraphrase it — and a refusal that says what the options were is one the
+    model can recover from, where "not found" is one it will retry blind.
+    """
+    text = wanted.strip()
+    if text.isdigit():
+        index = int(text)
+        if 0 <= index < len(actions):
+            return actions[index]
+        raise ToolError(f'there is no action number {index} here. Ask for the list again and count from 0.')
+    lowered = text.lower()
+    for action in actions:
+        if lowered and lowered in action.title.lower():
+            return action
+    raise ToolError(f'no action here matches {wanted!r}. Ask with operation=code_action and no action to see them.')
 
 
 def _locations(result: Any) -> list[tuple[str, dict[str, Any]]]:
@@ -176,6 +250,25 @@ class LspTool(Tool):
                 'column': {'type': 'integer', 'description': 'Instead of symbol: the column, from 1.'},
                 'query': {'type': 'string', 'description': 'For search: the name, or part of it.'},
                 'wait': {'type': 'integer', 'description': 'For diagnostics: seconds to wait for the server. Default 10.'},
+                'action': {
+                    'type': 'string',
+                    'description': (
+                        'For code_action: which one to apply — the number from the list, or part of its title. '
+                        'Leave it out to be shown what is on offer instead, which changes nothing.'
+                    ),
+                },
+                'only': {
+                    'type': 'string',
+                    'description': "For code_action: only offer actions of this kind, e.g. 'quickfix' or 'source.fixAll'.",
+                },
+                'new_name': {'type': 'string', 'description': 'For rename: the new name for the symbol on that line.'},
+                'end_line': {
+                    'type': 'integer',
+                    'description': (
+                        'For format (and for code_action): the last line of the range, from 1. Omit to format the '
+                        'whole file, or to ask about the position alone.'
+                    ),
+                },
             },
             'required': ['operation'],
         }
@@ -198,6 +291,18 @@ class LspTool(Tool):
             )
         return spec, ''
 
+    def _capable(self, server: Any, op: str, args: dict[str, Any]) -> bool:
+        """Whether the server said it answers this particular call.
+
+        Formatting a range is a different method from formatting a file, and
+        plenty of servers have one without the other — asking anyway is an
+        error named after the protocol method, which reads to a model as a
+        broken server rather than an absent feature.
+        """
+        if op == 'format' and args.get('end_line'):
+            return server.supports(*RANGE_METHOD)
+        return server.supports(METHODS[op], CAPABILITIES[op])
+
     def assess(self, args: dict[str, Any], ctx: ToolContext) -> Assessment:
         op = args.get('operation')
         if op not in OPERATIONS:
@@ -211,23 +316,47 @@ class LspTool(Tool):
             )
         if op == 'search' and not str(args.get('query') or '').strip():
             return Assessment(risk=Risk.READ, summary='', invalid='search needs a query')
+        if op == 'rename' and not str(args.get('new_name') or '').strip():
+            return Assessment(risk=Risk.READ, summary='', invalid='rename needs a new_name')
+        if args.get('end_line') and not args.get('line'):
+            return Assessment(risk=Risk.READ, summary='', invalid='end_line needs a line to start from')
 
         path = args.get('path') or ''
+        # Only the positional operations have a line, and this is built before
+        # the branch that needs it, so it cannot read one.
+        target = _at(args)
         if op == 'search':
             what = f'search for {args["query"]!r}'
+        elif op == 'rename':
+            what = f'rename {target} to {str(args["new_name"]).strip()!r} in {path}:{args["line"]}'
+        elif op == 'format':
+            what = f'format {path}:{args["line"]}-{args["end_line"]}' if args.get('end_line') else f'format {path}'
+        elif op == 'code_action':
+            what = (f'apply code action {args["action"]!r} in {path}:{args["line"]}' if args.get('action')
+                    else f'list code actions in {path}:{args["line"]}')
         elif op in POSITIONAL:
-            target = args.get('symbol') or f'line {args["line"]}'
             what = f'{op.replace("_", " ")} of {target} in {path}:{args["line"]}'
         else:
             what = f'{op} in {path}'
 
+        # Graded from the arguments, because that is all the policy is given.
+        # A listing of code actions is a read of the server's opinion; applying
+        # one is a write of its edits, and the two are the same call with one
+        # argument differing.
+        writes = op in WRITE_OPS or (op == 'code_action' and bool(args.get('action')))
+
         if not self.pool.running(spec):
-            return Assessment(
-                risk=Risk.EXECUTE,
-                summary=f'start {spec.name} for this project, then {what}   '
-                        '(a language server can run the project\'s own build scripts)',
-            )
-        return Assessment(risk=Risk.READ, summary=what)
+            # EXECUTE rather than READ for a first question because starting a
+            # server can run the project's build scripts, and because it is
+            # higher up the ladder than WRITE: auto_edit runs file writes and
+            # asks about commands, so grading a call that does both as WRITE
+            # would make the one that also *starts something* the safer of the
+            # two to run unattended.
+            note = 'a language server can run the project\'s own build scripts'
+            if writes:
+                note += ', and this one changes files besides'
+            return Assessment(risk=Risk.EXECUTE, summary=f'start {spec.name} for this project, then {what}   ({note})')
+        return Assessment(risk=Risk.WRITE if writes else Risk.READ, summary=what)
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> Output:
         op = args['operation']
@@ -243,7 +372,7 @@ class LspTool(Tool):
             await server.settle(20)
             lines = _Lines(ctx.root)
 
-            if op in CAPABILITIES and not server.supports(METHODS[op], CAPABILITIES[op]):
+            if op in CAPABILITIES and not self._capable(server, op, args):
                 raise ToolError(
                     f'{spec.name} does not answer {op.replace("_", " ")} questions. {INSTEAD.get(op, "Use grep instead.")}'
                 )
@@ -260,6 +389,9 @@ class LspTool(Tool):
             if op == 'symbols':
                 result = await server.request(METHODS['symbols'], {'textDocument': {'uri': uri}})
                 return self._symbols(server, result or [], path, lines)
+
+            if op in WRITE_OPS or op == 'code_action':
+                return await self._edit(server, op, path, args, ctx, lines)
 
             params: dict[str, Any] = {'textDocument': {'uri': uri}, 'position': _position(path, args)}
             if op == 'references':
@@ -291,6 +423,105 @@ class LspTool(Tool):
         if server.busy:
             return f'{said.capitalize()} — but {server.spec.name} is still busy ({server.busy}), so ask again shortly.'
         return f'{said.capitalize()}.'
+
+    # -- the operations that change files ------------------------------------
+
+    async def _edit(
+        self, server: Any, op: str, path: Path, args: dict[str, Any], ctx: ToolContext, lines: _Lines,
+    ) -> Output:
+        """`code_action`, `rename` and `format`: the three that write.
+
+        Every one of them ends at `apply_edit`, which is the only route from
+        this file to a write, and which will not write without the
+        confinement the session handed it.
+        """
+        if op == 'code_action':
+            start, end = _range(path, args)
+            actions = await server.code_action(path, start, end, only=args.get('only'))
+            if not args.get('action'):
+                return self._actions(server, actions, path, lines)
+            chosen = _choose(actions, str(args['action']))
+            if chosen.disabled:
+                raise ToolError(f'{chosen.title!r} cannot be applied here: {chosen.disabled}')
+            if chosen.edit is None:
+                raise ToolError(f'{chosen.title!r} comes back with no edit, so there is nothing to apply. Use edit_file.')
+            return await self._apply(chosen.edit, path, lines, ctx, f'applied {chosen.title!r}')
+
+        if op == 'rename':
+            new_name = str(args['new_name']).strip()
+            edit = await server.rename(path, _position(path, args), new_name)
+            return await self._apply(edit, path, lines, ctx, f'renamed {_at(args)} to {new_name!r}')
+
+        start, end = _range(path, args)
+        if args.get('end_line'):
+            edits = await server.range_formatting(path, start, end)
+            what = f'formatted {lines.name(path)}:{args["line"]}-{args["end_line"]}'
+        else:
+            edits = await server.formatting(path)
+            what = f'formatted {lines.name(path)}'
+        if not edits:
+            # No edits is the answer for a file that is already formatted and
+            # for a server with no formatter configured, and the model cannot
+            # tell those apart. Said so rather than claiming the second.
+            return Output(
+                content=f'{server.spec.name} had nothing to format in {lines.name(path)} — it is already '
+                        'formatted, or this project has no formatter configured for it.',
+                display={'server': server.spec.name, 'changed': 0},
+            )
+        return await self._apply(WorkspaceEdit.for_file(path.as_uri(), edits), path, lines, ctx, what)
+
+    def _actions(self, server: Any, actions: list[CodeAction], path: Path, lines: _Lines) -> Output:
+        """What is on offer, in the order the server offered it.
+
+        The numbers are the point: the model is shown a list and then names
+        one, and a list it has to re-derive by matching titles is a list it
+        will get wrong.
+        """
+        if not actions:
+            return Output(content=self._nothing(server, f'no code actions offered in {lines.name(path)}'))
+
+        rows = []
+        for number, action in enumerate(actions[:MAX_RESULTS]):
+            kind = action.kind or 'action'
+            if action.disabled:
+                note = f'  (cannot be applied: {action.disabled})'
+            elif not action.edit or not action.edit.files:
+                note = '  (no edit attached)'
+            else:
+                files = len(action.edit.files)
+                note = f'  (changes {files} file{"s" if files != 1 else ""})'
+            rows.append(f'{number:>3}  {kind:<24} {action.title}{note}')
+
+        body = '\n'.join(rows)
+        more = f'\n…and {len(actions) - MAX_RESULTS} more' if len(actions) > MAX_RESULTS else ''
+        return Output(
+            content=(
+                f'{len(actions)} code action{"s" if len(actions) != 1 else ""} offered in {lines.name(path)}:\n'
+                f'{body}{more}\n\nApply one with action=<number>.'
+            ),
+            display={'server': server.spec.name, 'actions': len(actions)},
+            truncated=len(actions) > MAX_RESULTS,
+        )
+
+    async def _apply(self, edit: WorkspaceEdit, path: Path, lines: _Lines, ctx: ToolContext, what: str) -> Output:
+        """Hand an edit to the client, which writes it or none of it.
+
+        `path` is the file the call was about, and goes in the display so the
+        session's after-write hook reports the diagnostics for the file the
+        model was working on — the hook reads one path, and a rename that
+        touched nine files has to be summarised as well.
+        """
+        written = await apply_edit(edit, lambda uri: resolve_in_root(uri_to_path(uri), ctx), ctx.checkpoint)
+        changed = [f for f in written if f.edits]
+        if not changed:
+            return Output(content=f'{what}: the server had nothing to change.', display={'path': str(path)})
+
+        rows = [f'{lines.name(f.path)}  ({f.edits} change{"s" if f.edits != 1 else ""})' for f in written]
+        diff = '\n'.join(_diff(f.before, f.after, lines.name(f.path)) for f in changed)
+        return Output(
+            content=f'{what} — {len(changed)} file{"s" if len(changed) != 1 else ""}:\n' + '\n'.join(rows),
+            display={'path': str(path), 'diff': diff, 'files': [str(f.path) for f in changed]},
+        )
 
     def _symbols(self, server: Any, result: list[dict[str, Any]], path: Path, lines: _Lines) -> Output:
         rows = _symbol_lines(result)
