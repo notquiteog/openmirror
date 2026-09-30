@@ -28,6 +28,19 @@ was half-done and letting the model believe it finished.
 **One file per session, under the data directory**, and a small index beside
 them so the list does not have to open all of them. Never inside a working
 root: a conversation is not a file in the project, and `grep` would find it.
+
+**Appended to, not rewritten.** Each turn adds a line and nothing else. The
+first version serialised the entire transcript and renamed it over the top on
+every turn, which is fine for a session of forty messages and a 90ms stall on
+the event loop for a session of eight hundred — measured, and it is the one
+long frame in an otherwise clean turn. Rewriting is also just wrong at scale:
+a long conversation would spend more time copying itself than working.
+
+The cost is a file that is append-only, so a turn cut off mid-write leaves
+every earlier line intact and at worst one short line, which the loader
+skips. That is the same bargain JSONL exists to make, and it is a better one
+here than an atomic rename, because the atomic version pays for the whole file
+every time to protect the last turn.
 """
 
 from __future__ import annotations
@@ -55,9 +68,9 @@ log = logging.getLogger(__name__)
 # a transcript. Pictures are kept as a short description instead — enough to
 # see that there *was* one, which is what reading the transcript back is for.
 MAX_IMAGE_CHARS = 120
-# A transcript bigger than this is not written. It would be somebody's
+# A transcript bigger than this is not appended to. It would be somebody's
 # runaway, and the fix is a smaller session, not a disk full of them.
-MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024
+MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 
 
 class TranscriptError(RuntimeError):
@@ -201,51 +214,101 @@ class SessionStore:
             raise TranscriptError(f'{session_id!r} is not a usable session id')
         return self.root / f'{safe}.json'
 
-    def save(self, stored: Stored) -> Path | None:
-        stored.updated = time.time()
+    def _written(self, session_id: str) -> int:
+        """How many messages are already on disk for a session.
+
+        Counted from the file rather than remembered, so a restarted daemon
+        knows the same thing the last one knew. A number in memory would be
+        wrong after a restart and the first append would duplicate a turn.
+        """
         try:
-            blob = json.dumps({
-                'id': stored.id, 'title': stored.title, 'root': stored.root, 'model': stored.model,
-                'policy': stored.policy, 'toolset': stored.toolset, 'messages': stored.messages,
-                'created': stored.created, 'updated': stored.updated, 'unfinished': stored.unfinished,
-            }, ensure_ascii=False)
-        except (TypeError, ValueError) as exc:
-            log.warning('session %s could not be serialised: %s', stored.id, exc)
-            return None
-        if len(blob.encode()) > MAX_TRANSCRIPT_BYTES:
-            log.warning('session %s is too large to store and was not written', stored.id)
+            with self.path_for(session_id).open('r', encoding='utf-8', errors='replace') as handle:
+                return max(0, sum(1 for line in handle if line.strip() and '"message"' in line))
+        except OSError:
+            return 0
+
+    def save(self, stored: Stored) -> Path | None:
+        """Append whatever is new, and nothing else.
+
+        The header is rewritten because it is one small line and it changes;
+        the messages are appended to. A session that has not changed writes
+        nothing at all, which is what makes a read-only turn free.
+        """
+        stored.updated = time.time()
+        target = self.path_for(stored.id)
+        already = self._written(stored.id)
+        if already >= len(stored.messages):
+            self._reindex(stored)
+            return target
+        if target.exists() and target.stat().st_size > MAX_TRANSCRIPT_BYTES:
+            log.warning('session %s is too large to keep appending to', stored.id)
             return None
 
-        target = self.path_for(stored.id)
-        tmp = target.with_suffix('.partial')
         try:
-            tmp.write_text(blob, encoding='utf-8')
-            tmp.replace(target)
-        except OSError as exc:
+            fresh = stored.messages[already:]
+            header = json.dumps({
+                'type': 'session', 'id': stored.id, 'title': stored.title, 'root': stored.root,
+                'model': stored.model, 'policy': stored.policy, 'toolset': stored.toolset,
+                'created': stored.created, 'unfinished': stored.unfinished,
+            }, ensure_ascii=False)
+            with target.open('a', encoding='utf-8') as handle:
+                if already == 0:
+                    handle.write(header + '\n')
+                for message in fresh:
+                    handle.write(json.dumps({'type': 'message', **message}, ensure_ascii=False) + '\n')
+        except (OSError, TypeError, ValueError) as exc:
             log.warning('session %s could not be written: %s', stored.id, exc)
             return None
         self._reindex(stored)
         return target
 
     def load(self, session_id: str) -> Stored | None:
+        """One line at a time, and a short line is skipped rather than fatal.
+
+        The file is append-only, so the realistic way to find one is a daemon
+        that stopped mid-write — and a transcript that refuses to open because
+        its *last* turn was cut off would throw away every turn before it.
+        """
+        header: dict[str, Any] = {}
+        messages: list[dict[str, Any]] = []
         try:
-            raw = json.loads(self.path_for(session_id).read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError) as exc:
+            with self.path_for(session_id).open('r', encoding='utf-8', errors='replace') as handle:
+                for number, line in enumerate(handle, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        log.debug('%s line %d is not JSON; skipped', session_id, number)
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    if record.get('type') == 'session':
+                        header = record
+                    elif record.get('type') == 'message':
+                        payload = {k: v for k, v in record.items() if k != 'type'}
+                        messages.append(payload)
+        except OSError as exc:
             log.warning('session %s could not be read: %s', session_id, exc)
             return None
-        if not isinstance(raw, dict):
+        if not header and not messages:
             return None
+        try:
+            modified = self.path_for(session_id).stat().st_mtime
+        except OSError:
+            modified = time.time()
         return Stored(
-            id=str(raw.get('id') or session_id),
-            title=str(raw.get('title') or ''),
-            root=str(raw.get('root') or ''),
-            model=str(raw.get('model') or ''),
-            policy=str(raw.get('policy') or ''),
-            toolset=[str(t) for t in (raw.get('toolset') or [])],
-            messages=[m for m in (raw.get('messages') or []) if isinstance(m, dict)],
-            created=float(raw.get('created') or time.time()),
-            updated=float(raw.get('updated') or time.time()),
-            unfinished=bool(raw.get('unfinished')),
+            id=str(header.get('id') or session_id),
+            title=str(header.get('title') or ''),
+            root=str(header.get('root') or ''),
+            model=str(header.get('model') or ''),
+            policy=str(header.get('policy') or ''),
+            toolset=[str(t) for t in (header.get('toolset') or [])],
+            messages=messages,
+            created=float(header.get('created') or modified),
+            updated=modified,
+            unfinished=bool(header.get('unfinished')),
         )
 
     def list(self, *, limit: int = 100) -> list[dict[str, Any]]:

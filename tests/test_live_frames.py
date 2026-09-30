@@ -4,7 +4,29 @@ Every smoothness claim in this project was made by reading code. This one is
 made by driving a real turn against a real provider in a real browser and
 timing the frames on the real page.
 
-**What it found, twice.**
+**What it found, three times.**
+
+The first, and the only real one: `atBottom()` read
+`scrollHeight`/`scrollTop`/`clientHeight` on every append, and a card append
+invalidates layout, so the next read forces it back — a frame that appended
+four cards forced layout four times, measured at 33.3ms against 16.7 for one
+append. Fixed by asking once per frame; proved exactly and separately in
+`test_scroll_coalescing.py`, which can fail.
+
+The second was this project's own: a CPU profile of a turn with an 850-turn
+transcript came back **36.8 seconds idle against about 950ms of script**, and
+the one thing over a millisecond in a row was the transcript write. A full
+serialise of eight hundred messages is 89ms of script on the event loop, once
+per turn — one long frame at the end of an otherwise clean turn, and the only
+one there is. Fixed twice over: the write happens in a thread, and it appends
+one line per turn rather than rewriting the file, which was also spending more
+time copying the conversation than working in it.
+
+The third is still unexplained and is recorded here rather than papered over:
+one further long frame per turn, around 70ms, of script with **no hot spot
+behind it** — the long-animation-frame API attributes none of it and the CPU
+profile shows nothing over a millisecond. Not a systematic cost: it is roughly
+one frame in a thousand of a turn that streams for half a minute.
 
 The first was a real bug: `atBottom()` read `scrollHeight`/`scrollTop`/
 `clientHeight` on every append, and a card append invalidates layout, so the
@@ -23,15 +45,12 @@ frames over 20ms", and that was one lucky run. Across nine:
     over 20ms   0.7%, 0.8%, 2.6%, 2.7%, 3.1%, 3.2%, 3.4%, 5.0%
 
 **The steady state is a held frame**, and that is the claim the project makes
-and it holds. **The tail is intermittent and is not explained.** It is not the
-transcript being written: the slow frames were captured with `cards: 0` and a
-constant node count, so nothing was being appended when they happened, and a
-stack taken inside the rAF callback came back empty — expected, since the
-callback observes the gap rather than causing it. A `PerformanceObserver` on
-`longtask` finds about one 55ms task per turn, attributed to `self`/window
-with no script, which points at the browser's own style, layout and paint
-rather than at anything this code calls. It is pre-existing: it reproduces
-with everything added since removed.
+and it holds. **The tail is intermittent and is only partly explained.** The bulk fill
+this harness does to build a long transcript is the largest single cost in the
+window and is not something the real interface does — the real one grows a
+transcript a node at a time. Beyond that, what is left is the third finding
+above: about one unattributed 70ms frame per turn, and a tail that moves
+between runs because what the model did that turn moved it.
 
 It is not known, and this does not pretend otherwise. **Only the median is
 asserted**, and the tail is printed instead. That is not a loose bound — a

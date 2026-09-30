@@ -31,6 +31,12 @@ tor = ["aiohttp-socks>=0.9"]
 # autopilot; the browser tools work without it.
 desktop = ["mss>=9.0", "pillow>=10.0"]
 browser = ["playwright>=1.45"]
+# Reading PDFs. xlsx is done in the standard library because a spreadsheet is a
+# zip of XML and there is no reason to make people install anything for it;
+# a PDF is a font-and-geometry format, and a hand-written extractor gets the
+# easy cases and garbles the rest, which is worse than a refusal. An extra
+# rather than a dependency: nothing that does not open a PDF should carry it.
+docs = ["pypdf>=4.0"]
 # A C scan over the memory index, in process. Optional because it is a loadable
 # SQLite extension and `enable_load_extension` is a COMPILE-TIME Python option
 # that not every build has -- so this cannot be a hard dependency without

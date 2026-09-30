@@ -303,3 +303,106 @@ async def test_a_broken_store_does_not_stop_a_session_opening(tmp_path):
     )
     await session.start()          # must not raise
     await session.close()          # and must not raise either
+
+
+# --- appending rather than rewriting -------------------------------------------
+
+
+def test_a_second_save_appends_only_what_is_new(tmp_path):
+    """Rewriting the whole transcript every turn is a 90ms stall on the event
+    loop for a long session, and more time spent copying the conversation than
+    working in it. Measured, and it is the one long frame in a clean turn."""
+    store = SessionStore(tmp_path / 's')
+    first = stored()
+    store.save(first)
+
+    grown = stored()
+    grown.messages = grown.messages + [{'role': 'user', 'content': [{'type': 'text', 'text': 'more'}]}]
+    store.save(grown)
+
+    lines = (tmp_path / 's' / 'abc123.json').read_text().splitlines()
+    # One header, the two it already had, and the one that is new — each once.
+    assert len(lines) == 4, lines
+    assert store.load('abc123').messages == grown.messages
+
+
+def test_a_session_that_has_not_changed_writes_nothing(tmp_path):
+    """So a read-only turn is free."""
+    store = SessionStore(tmp_path / 's')
+    store.save(stored())
+    path = tmp_path / 's' / 'abc123.json'
+    before = path.stat().st_mtime_ns
+    store.save(stored())
+    assert path.stat().st_mtime_ns == before
+    assert len(path.read_text().splitlines()) == 3      # a header and two messages
+
+
+def test_a_line_cut_off_mid_write_does_not_cost_the_turns_before_it(tmp_path):
+    """The realistic way to find a short line is a daemon that stopped while
+    writing, and a transcript that refused to open because its *last* turn was
+    cut off would throw away every turn before it."""
+    store = SessionStore(tmp_path / 's')
+    store.save(stored())
+    path = tmp_path / 's' / 'abc123.json'
+    with path.open('a', encoding='utf-8') as handle:
+        handle.write('{"type": "message", "role": "user", "conte')     # cut off
+
+    back = store.load('abc123')
+    assert back is not None
+    assert len(back.messages) == 2, back.messages
+    assert back.title == 'Parser work'
+
+
+async def test_the_write_does_not_happen_on_the_event_loop(tmp_path):
+    """89ms of script, once per turn, for work nobody is waiting for."""
+    import threading
+
+    from openmirror.agent.approval import Mode
+    from openmirror.agent.runtime import build_session
+    from openmirror.providers.base import StreamDone
+    from tests.test_agent import ScriptedProvider
+
+    where: list[str] = []
+
+    class Watched:
+        """Wraps a real store and records which thread the write landed on."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def load(self, session_id):
+            return self.inner.load(session_id)
+
+        def save(self, value):
+            where.append(threading.current_thread().name)
+            return self.inner.save(value)
+
+    store = Watched(SessionStore(tmp_path / 'sessions'))
+    session = build_session(
+        root=str(tmp_path), provider=ScriptedProvider([[StreamDone()]]), model='x',
+        mode=Mode.ASK, store=store,
+    )
+    await session.start()
+    session.messages = [Message(role='user', content=[TextBlock(text='a thing')])]
+    await session.close()
+    assert where, 'nothing was written'
+    assert all(name != threading.current_thread().name for name in where), where
+
+
+def test_a_transcript_outlives_a_restart_even_after_a_partial_write(tmp_path):
+    """The two properties together, which is what a daemon stopping mid-turn
+    actually produces."""
+    store = SessionStore(tmp_path / 's')
+    kept = stored()
+    kept.messages = kept.messages + [{'role': 'user', 'content': [{'type': 'text', 'text': 'second'}]}]
+    store.save(kept)
+    (tmp_path / 's' / 'abc123.json').open('a', encoding='utf-8').write('{"type":"messa')
+
+    again = SessionStore(tmp_path / 's')
+    back = again.load('abc123')
+    # The three that were written whole. The fourth line was cut off, and is
+    # skipped rather than costing the three before it.
+    assert len(back.messages) == 3, back.messages
+    # And appending again picks up after what survived, rather than duplicating.
+    again.save(back)
+    assert len(again.load('abc123').messages) == 3

@@ -459,11 +459,19 @@ class AgentSession:
             )]))
 
     async def _persist(self) -> None:
-        """Write the conversation down, if there is somewhere to put it."""
+        """Write the conversation down, if there is somewhere to put it.
+
+        **In a thread.** Serialising a transcript is measured at 89ms of
+        script on the event loop for a long session — one long frame at the
+        end of an otherwise clean turn, and the only one there is. It is
+        also work nobody is waiting for: the answer has already been given, so
+        the turn is finished and this is bookkeeping.
+        """
         if self.store is None:
             return
         try:
-            self.store.save(self._stored())
+            stored = self._stored()
+            await asyncio.to_thread(self.store.save, stored)
         except Exception:  # noqa: BLE001 - losing a transcript is bad, ending a turn is worse
             log.exception('the conversation for %s could not be written', self.id)
 

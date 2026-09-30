@@ -19,6 +19,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
+from openmirror.agent.documents import DocumentError, is_document, read_document
 from openmirror.agent.tools.base import (
     Assessment,
     Output,
@@ -129,6 +130,13 @@ class ReadTool(Tool):
             'path': {'type': 'string', 'description': 'Path to the file.'},
             'offset': {'type': 'integer', 'description': '1-based line to start at.'},
             'limit': {'type': 'integer', 'description': f'Lines to read. Default {DEFAULT_LINE_LIMIT}.'},
+            'layout': {
+                'type': 'boolean',
+                'description': (
+                    'For a PDF: keep the visual layout instead of reading in whatever order the glyphs '
+                    'are stored. Slower, and right for a two-column document.'
+                ),
+            },
         },
         'required': ['path'],
     }
@@ -151,6 +159,23 @@ class ReadTool(Tool):
             from openmirror.agent.tools import notebook
 
             return notebook.read(path, ctx)
+        if is_document(path):
+            # A PDF or a spreadsheet is a *document*, and saying "looks like a
+            # binary file" about one is a lie: the file is readable, this just
+            # needed a code path that did not exist a moment ago. The refusal
+            # a user sees when pypdf is absent names the install instead.
+            try:
+                read = read_document(path, layout=bool(args.get('layout')))
+            except DocumentError as exc:
+                raise ToolError(str(exc)) from exc
+            if read is None:
+                raise ToolError(f'{args["path"]}: not a document this knows how to read')
+            journal.note_read(ctx.session_id, path)
+            return Output(
+                content=read.describe(),
+                display={'path': str(path), 'kind': read.kind, 'pages': read.pages,
+                         'sheets': read.sheets},
+            )
         if _looks_binary(path):
             raise ToolError(f'{args["path"]}: looks like a binary file ({path.stat().st_size} bytes)')
         if path.stat().st_size > MAX_READ_BYTES:
