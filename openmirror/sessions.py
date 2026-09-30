@@ -268,11 +268,19 @@ class SessionStore:
         The file is append-only, so the realistic way to find one is a daemon
         that stopped mid-write — and a transcript that refuses to open because
         its *last* turn was cut off would throw away every turn before it.
+
+        A file that is not there at all is not a failure. Restoring a session
+        asks for the transcript before anything has been written, and on a
+        command line that warning lands on a person's stderr on every single
+        run and reads as though something broke.
         """
+        path = self.path_for(session_id)
+        if not path.exists():
+            return None
         header: dict[str, Any] = {}
         messages: list[dict[str, Any]] = []
         try:
-            with self.path_for(session_id).open('r', encoding='utf-8', errors='replace') as handle:
+            with path.open('r', encoding='utf-8', errors='replace') as handle:
                 for number, line in enumerate(handle, 1):
                     line = line.strip()
                     if not line:
@@ -295,7 +303,7 @@ class SessionStore:
         if not header and not messages:
             return None
         try:
-            modified = self.path_for(session_id).stat().st_mtime
+            modified = path.stat().st_mtime
         except OSError:
             modified = time.time()
         return Stored(

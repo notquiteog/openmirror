@@ -217,6 +217,12 @@ class SessionManager:
                 )
             )
 
+        # Minted here rather than inside `build_session`, because everything
+        # this method builds *for* the session needs its id first — the
+        # checkpoint store's directory above is the case that matters, and a
+        # second copy of this line anywhere else would be a second id.
+        session_id = session_id or uuid.uuid4().hex[:16]
+
         checkpoints = None
         if cfg.checkpoints_enabled:
             from openmirror.agent.checkpoint import CheckpointStore
@@ -224,8 +230,18 @@ class SessionManager:
             # Under the data directory, never inside the working root — a
             # snapshot in the tree the agent is editing gets read, grepped and
             # eventually committed.
+            #
+            # Keyed on the session's *own* id, which is why the id is minted
+            # above rather than left to `build_session`. It used to be
+            # `session_id or 'session'`, and since almost every session is
+            # created without an id, that was `'session'` almost every time:
+            # one shared directory, and so one undo history shared by every
+            # conversation on the machine. `/undo` in one session would put back
+            # another session's turn, and the rewind dialog listed turns about
+            # files the person was not working on. Nobody noticed because the
+            # list is short and the titles are about real work.
             checkpoints = CheckpointStore(
-                Path(cfg.memory_db).parent / 'checkpoints' / (session_id or 'session')
+                Path(cfg.memory_db).parent / 'checkpoints' / session_id
             )
 
         # Which language servers this machine has. Looked up per session
@@ -240,6 +256,12 @@ class SessionManager:
         session = build_session(
             root=root, provider=provider, model=model, mode=mode, effort=effort, session_id=session_id,
             title=title or Path(root).name, memory=memory, user_id=user_id,
+            # Passed rather than left to `build_session`'s own default, because
+            # the default is a process-wide cache this class cannot see. Every
+            # other path here — stored, resume, fork — goes through `self.store`,
+            # so a manager with an injected store wrote its new sessions
+            # somewhere the rest of the manager never looks.
+            store=self.store(),
             confined=not cfg.unconfined,
             extra_dirs=list(getattr(cfg, "extra_dirs", []) or []),
             allow_purchases=cfg.allow_purchases,

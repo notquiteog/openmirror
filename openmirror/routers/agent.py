@@ -19,9 +19,9 @@ from openmirror.agent import windows
 from openmirror.agent.approval import Mode
 from openmirror.agent.manager import manager
 from openmirror.config import config
-from openmirror.providers.base import Modality
 from openmirror.providers.reasoning import normalise
-from openmirror.providers.registry import NoProviderError, Route, RouteSet, pick_model, registry
+from openmirror.providers.registry import NoProviderError
+from openmirror.providers.registry import resolve_chat as resolve_chat_impl
 from openmirror.routers import media as media_router
 from openmirror.routers import memory as memory_router
 
@@ -34,40 +34,18 @@ http = APIRouter(prefix='/api/sessions')
 async def resolve_chat(provider: str | None = None, model: str | None = None) -> tuple[object, str, str]:
     """Pick the chat provider and a concrete model. Raises NoProviderError.
 
-    Shared rather than private, because the two other places that need a model
-    for a single turn — the commit-message draft in `routers/git.py` and the
-    reply draft in `routers/mail.py` — need exactly this and nothing else. A
-    second copy of "or ask the provider what it has" is a second copy of the
-    reason the fallback exists, and one of them will be the one that forgets.
+    An alias rather than the definition: the answer to "which model does a new
+    conversation use" is not a question about HTTP, and the `/model` command
+    has to ask it from inside the agent loop without importing this module.
+    The implementation moved to `providers.registry`; every import site here,
+    and the ones in `cli.py` and `mcp/server.py`, are unchanged.
     """
-    routes = RouteSet(routes={Modality.CHAT: Route(provider=provider, model=model or '')}) if provider else None
-    impl, route, info = registry.resolve(Modality.CHAT, routes)
-
-    chosen = model or route.model or config.default_chat_model
-    if not chosen:
-        # Asking the provider is better than guessing a name: a local install
-        # has whatever happens to be pulled, and that is not knowable from here.
-        available = await impl.models()
-        if not available:
-            raise NoProviderError(f'{info.id} reports no models')
-        # Not simply the first. An install with an embedding model pulled
-        # alongside a chat one answered every conversation with "that model
-        # does not support chat", because the first entry happened to be the
-        # embedding one — and an agent session needs tool calling on top of
-        # that, so a model that cannot do it is the wrong default even when it
-        # would answer.
-        chosen = pick_model(available, Modality.CHAT, need_tools=True)
-        if not chosen:
-            names = ', '.join(str(m.get('id')) for m in available[:8])
-            raise NoProviderError(
-                f'{info.id} has no model that can hold a conversation. It offers: {names}'
-            )
-    return impl, chosen, info.id
+    return await _resolve_chat(provider, model)
 
 
 # Kept as a private alias so the many call sites inside this module read the
 # same as they did before this was shared.
-_resolve_chat = resolve_chat
+_resolve_chat = resolve_chat_impl
 
 
 class CreateSession(BaseModel):

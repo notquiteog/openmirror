@@ -8,6 +8,7 @@ an interrupted turn (the one most likely to need undoing).
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 
@@ -241,3 +242,198 @@ async def test_an_interrupted_turn_is_still_undoable():
         assert len(store.checkpoints) == 1
         store.restore('1')
         assert (root / 'a.txt').read_text() == 'before\n'
+
+
+# --- surviving a resume ------------------------------------------------------
+#
+# Found the hard way: `openmirror run -c -p /undo` said "Nothing to undo" on a
+# session that had just written a file, and so did every reopened browser tab.
+# The blobs were all still on disk. Only the index was in memory, so every
+# restart, every resume and every second tab arrived with an empty undo list and
+# no way to tell that from a session that never had checkpoints.
+
+
+def test_the_undo_history_is_still_there_after_a_resume(store, tmp_path):
+    target = tmp_path / 'a.txt'
+    target.write_text('before\n')
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('after\n')
+    store.commit()
+
+    # A new store over the same directory is what a resume, a restarted daemon
+    # and a second browser tab all do.
+    reopened = CheckpointStore(store.root)
+
+    assert reopened.undo_count() == 1
+    rewind = reopened.undo_latest()
+    assert rewind is not None
+    assert target.read_text() == 'before\n'
+
+
+def test_the_redo_stack_survives_a_resume_too(store, tmp_path):
+    """The other half of the pair. An undo that survives a restart but whose
+    redo does not is an undo you cannot take back."""
+    target = tmp_path / 'a.txt'
+    target.write_text('before\n')
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('after\n')
+    store.commit()
+    store.undo_latest()
+    # Back to what it was before the turn, not gone: it existed before.
+    assert target.read_text() == 'before\n'
+
+    reopened = CheckpointStore(store.root)
+    assert reopened.redo_count() == 1
+    rewind = reopened.redo_last()
+    assert rewind is not None
+    assert target.read_text() == 'after\n'
+
+
+def test_a_new_edit_after_a_resume_still_forgets_the_redo(store, tmp_path):
+    """The loaded stack is a stack like any other, and the rule is the same."""
+    target = tmp_path / 'a.txt'
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('after\n')
+    store.commit()
+    store.undo_latest()
+
+    reopened = CheckpointStore(store.root)
+    other = tmp_path / 'b.txt'
+    reopened.begin('t2', 'edit b')
+    reopened.record(other)
+    other.write_text('new\n')
+    reopened.commit()
+
+    assert reopened.redo_count() == 0
+    assert CheckpointStore(store.root).redo_count() == 0
+
+
+def test_an_undone_turn_is_not_offered_again_after_a_resume(store, tmp_path):
+    """The list describes what could still be undone, not what once happened."""
+    target = tmp_path / 'a.txt'
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('after\n')
+    store.commit()
+    store.undo_latest()
+
+    assert CheckpointStore(store.root).undo_count() == 0
+
+
+def test_a_pruned_snapshot_does_not_take_the_history_with_it(store, tmp_path):
+    """"This one entry is broken" and "you have no undo at all" are not the same
+    problem, and the first is the one that happens.
+
+    Two turns, so there is something left to undo after one entry is dropped.
+    """
+    first = tmp_path / 'first.txt'
+    first.write_text('one\n')
+    store.begin('t1', 'edit first')
+    store.record(first)
+    first.write_text('one two\n')
+    store.commit()
+
+    doomed = store.checkpoints[0]
+    (store.blobs / str(doomed.files[str(first)].digest)).unlink()   # pruned
+
+    second = tmp_path / 'second.txt'
+    second.write_text('three\n')
+    store.begin('t2', 'edit second')
+    store.record(second)
+    second.write_text('three four\n')
+    store.commit()
+
+    reopened = CheckpointStore(store.root)
+    assert reopened.undo_count() == 1, 'the entry whose blob is gone is dropped'
+    # And the dropped one is not merely un-undoable in place: it is not in the
+    # list at all, because a turn in the undo list that does nothing when
+    # pressed reads as a turn.
+    assert [cp.label for cp in reopened.checkpoints] == ['edit second']
+    rewind = reopened.undo_latest()
+    assert rewind is not None
+    assert second.read_text() == 'three\n'
+
+
+def test_a_blob_that_goes_missing_after_the_load_is_reported(store, tmp_path):
+    """The other way the same thing happens, and the one a person can act on:
+    the snapshot is there when the session opens and gone when they press
+    undo. It says which file and why, rather than doing half of it in silence.
+    """
+    target = tmp_path / 'a.txt'
+    target.write_text('before\n')
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('after\n')
+    store.commit()
+
+    reopened = CheckpointStore(store.root)          # reads fine
+    for blob in reopened.blobs.iterdir():            # then the store is pruned
+        blob.unlink()
+
+    rewind = reopened.undo_latest()
+    assert rewind is not None
+    assert str(target) in rewind.report.skipped
+    assert 'missing' in rewind.report.skipped[str(target)]
+    assert target.read_text() == 'after\n', 'and the file is left as it was'
+
+
+def test_an_unreadable_index_is_not_fatal(store, tmp_path):
+    """A corrupt index loses the undo history. It must not stop the session
+    from starting, which is what ending a turn would cost."""
+    store.index.write_text('{ this is not json', encoding='utf-8')
+    reopened = CheckpointStore(store.root)
+    assert reopened.undo_count() == 0
+    # And it is still usable afterwards, because the next commit rewrites it.
+    target = tmp_path / 'a.txt'
+    reopened.begin('t1', 'edit a')
+    reopened.record(target)
+    target.write_text('after\n')
+    reopened.commit()
+    assert CheckpointStore(store.root).undo_count() == 1
+
+
+def test_an_index_of_the_wrong_shape_is_not_fatal(store):
+    store.index.write_text('{"checkpoints": "nope"}', encoding='utf-8')
+    assert CheckpointStore(store.root).undo_count() == 0
+
+
+def test_the_first_form_of_the_index_still_opens(store, tmp_path):
+    """It used to be a bare list of checkpoints. An index written by that
+    version is somebody's undo history, and dropping it on an upgrade is the
+    kind of loss nobody notices until the moment they need it."""
+    target = tmp_path / 'a.txt'
+    target.write_text('before\n')
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('after\n')
+    store.commit()
+    records = json.loads(store.index.read_text(encoding='utf-8'))
+    store.index.write_text(json.dumps(records['checkpoints']), encoding='utf-8')
+
+    reopened = CheckpointStore(store.root)
+    assert reopened.undo_count() == 1
+    assert reopened.undo_latest() is not None
+    assert target.read_text() == 'before\n'
+
+
+def test_a_hunk_review_is_not_reported_as_a_hand_edit(store, tmp_path):
+    """A review writes through this store, so the file on disk is ours.
+
+    Warning that somebody edited it — on every single rewind, after every
+    review — is a warning nobody reads, and it is the same guard the existing
+    tests check for a real hand edit, so the two have to agree about what
+    counts.
+    """
+    target = tmp_path / 'a.txt'
+    target.write_text('one\ntwo\n')
+    store.begin('t1', 'edit a')
+    store.record(target)
+    target.write_text('one\ntwo\nthree\n')
+    store.commit()
+
+    review = store.apply_review(str(target), {0})
+    assert review['ok'] is True
+    assert store.restore('1').changed_since == []

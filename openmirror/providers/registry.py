@@ -294,6 +294,44 @@ def pick_model(models: list[dict[str, Any]], modality: Modality, *, need_tools: 
     return str(usable[0]['id'])
 
 
+async def resolve_chat(provider: str | None = None, model: str | None = None) -> tuple[Any, str, str]:
+    """Pick the chat provider and a concrete model for one conversation.
+
+    Lives here rather than in a router because four callers need it and they
+    are not all HTTP: creating a session, drafting a commit message, drafting
+    a mail reply, and the ``/model`` command — which runs inside the agent
+    loop, where importing a router would invert the layers. A second copy of
+    "or ask the provider what it has" is a second copy of the reason the
+    fallback exists, and one of them will be the one that forgets.
+
+    Naming a provider without a model is the common case from ``/model``: the
+    person picked "anthropic" and means "the one it thinks is best", not the
+    first model that install happened to list.
+    """
+    from openmirror.config import config
+
+    routes = RouteSet(routes={Modality.CHAT: Route(provider=provider, model=model or '')}) if provider else None
+    impl, route, info = registry.resolve(Modality.CHAT, routes)
+
+    chosen = model or route.model or config.default_chat_model
+    if not chosen:
+        # Asking the provider is better than guessing a name: a local install
+        # has whatever happens to be pulled, and that is not knowable from here.
+        available = await impl.models()
+        if not available:
+            raise NoProviderError(f'{info.id} reports no models')
+        # Not simply the first. An install with an embedding model pulled
+        # alongside a chat one answered every conversation with "that model
+        # does not support chat", and the fix was picking on capability.
+        chosen = pick_model(available, Modality.CHAT, need_tools=True)
+        if not chosen:
+            names = ', '.join(str(m.get('id')) for m in available[:8])
+            raise NoProviderError(
+                f'{info.id} has no model that can hold a conversation. It offers: {names}'
+            )
+    return impl, chosen, info.id
+
+
 # Process-wide registry. Deliberately a module global: providers are
 # configuration, every request reads the same set, and threading one through
 # every call site buys nothing.

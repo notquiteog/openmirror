@@ -309,8 +309,15 @@ def project_context(root: Path, limit: int = 32_000) -> str:
     Several conventions exist for this file and none has won, so the first one
     found is used and the rest ignored — concatenating them produces
     contradictory instructions on a repo that has more than one.
+
+    The order is not arbitrary. `AGENTS.md` first because it is the one a
+    project that cares about cross-agent portability will have committed, and
+    `CLAUDE.md` second because a repo that only has that has already been set
+    up for this kind of tool. `opencode.md` and `.openmirror/AGENTS.md` after
+    both: naming yourself in your own instructions file is a statement about
+    which tool you expect, not the most portable thing you could have written.
     """
-    for name in ('AGENTS.md', 'CLAUDE.md', '.openmirror/AGENTS.md', 'CONVENTIONS.md'):
+    for name in ('AGENTS.md', 'CLAUDE.md', 'opencode.md', '.openmirror/AGENTS.md', 'CONVENTIONS.md'):
         candidate = root / name
         if candidate.is_file():
             try:

@@ -18,6 +18,8 @@
 import { companion, caption } from './companions/index.js';
 import { openConnections, wireConnections } from './connections.js';
 import { handleFileKey, resetFiles, wireFiles } from './files.js';
+import { clear as clearAttachments, pending as pendingAttachments, wireAttachments } from './attachments.js';
+import { active as searchActive, wireHistory } from './history.js';
 import { setCommitRoot, wireCommit } from './commit.js';
 import { $, api, el, icon, json, onReachable, socket, took } from './dom.js';
 import { endLive, isLive, wireLive } from './live.js';
@@ -1136,7 +1138,7 @@ function handleAgentEvent(ev) {
       break;
 
     case 'policy.changed': {
-      // One event for both live controls, so say only what actually moved —
+      // One event for every live control, so say only what actually moved —
       // a thinking change announced as "Approval is now: ask first" would be
       // a true sentence about the wrong thing.
       const before = state.info || {};
@@ -1145,7 +1147,10 @@ function handleAgentEvent(ev) {
       if ((before.effort ?? null) !== (ev.effort ?? null)) {
         notice(`Thinking is now: ${ev.effort || "the model's own default"}.`);
       }
-      dressChips({ policy: ev.mode, effort: ev.effort ?? null });
+      if (ev.model && before.model !== ev.model) {
+        notice(`Answering with ${ev.model}${ev.provider ? ` on ${ev.provider}` : ''} from now on.`);
+      }
+      dressChips({ policy: ev.mode, effort: ev.effort ?? null, model: ev.model ?? undefined });
       break;
     }
 
@@ -1793,6 +1798,11 @@ async function loadSessions() {
   // *about* — everything else about it is history — so it is what the list
   // sorts itself under, and one machine running three projects reads as
   // three projects rather than as nine chats.
+  //
+  // Not while a search is on screen: this is a poll, and re-rendering under a
+  // search result throws it away every few seconds, which reads as the search
+  // flickering rather than as a list that is still there underneath.
+  if (searchActive()) return;
   const list = $('#sessions');
   list.textContent = '';
   sessionRows.clear();
@@ -1899,8 +1909,14 @@ function dressChips(patch) {
   const model = $('#model-chip');
   if (info.model) {
     model.hidden = false;
-    model.textContent = info.model;
-    model.title = `answering with ${info.model}`;
+    // The provider rides along once it is known, because a chip saying
+    // "claude-sonnet-5" next to a provider chip saying "anthropic" is two
+    // facts about one thing, and after a `/model` switch the session's
+    // provider is the one that moved — not the install-wide route the other
+    // chip was filled from.
+    const where = info.provider ? ` on ${info.provider}` : '';
+    model.textContent = info.model + where;
+    model.title = `answering with ${info.model}${where}`;
   }
   dressHero();
 }
@@ -1995,6 +2011,10 @@ function selectSession(id) {
   // The file list belongs to the session it was asked about; offering files
   // from the one just left is worse than offering none.
   resetFiles();
+  // So are the pictures waiting on the composer: they were typed for the
+  // session just left, and sending them to a new one would be a message
+  // somebody never wrote.
+  clearAttachments();
   resetReview();
   resetHooks();
   refreshWorktrees();
@@ -2103,16 +2123,27 @@ function wire() {
   $('#composer').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    // A picture is a message on its own. "Have a look at this" with a
+    // screenshot under it is a complete thing to say, and refusing to send it
+    // because there are no words would make the feature work only in the case
+    // where it is least needed.
+    const attachments = pendingAttachments();
+    if (!text && !attachments.length) return;
     // Echoed immediately so typing feels instant; the server's turn.started
-    // replaces it, so live and replayed conversations render identically.
-    state.echo = userTurn(text);
+    // replaces it, so live and replayed conversations render identically. With
+    // a picture and no words, the echo says so — otherwise the local copy of
+    // the turn is a blank bubble that vanishes a moment later.
+    state.echo = userTurn(text || `${attachments.length} picture${attachments.length === 1 ? '' : 's'}`);
     // Sent while busy too. The server holds it and starts it when the running
     // turn ends, which is the whole point: the moment you have something to
     // add is usually *while* the agent is working on the first half of it, and
-    // an error saying "interrupt it first" throws away what you just typed
+    // an error saying "interrupt it first" throws away the thing you just typed
     // and makes you watch for a gap to type in.
-    send({ type: 'turn.submit', text });
+    send(attachments.length ? { type: 'turn.submit', text, attachments } : { type: 'turn.submit', text });
+    // The pictures went with the message, so the strip empties here rather than
+    // waiting for an answer — resending the same screenshot on the next turn
+    // because the strip still showed it would be worse than not clearing.
+    clearAttachments();
     hideSlash();
     input.value = '';
     input.style.height = 'auto';
@@ -2302,6 +2333,17 @@ wireHooks({ sessionId });
 wireWorktrees({ sessionId });
 refreshWorktrees();
 wireFiles({ sessionId, request: (path) => json(path) });
+wireAttachments();
+// Search replaces the session list while there is a query, so putting the
+// ordinary list back is a re-render rather than an undo — and the live poll
+// must not fight it, which is why the render is what the poll calls.
+wireHistory({
+  onEmpty: () => {
+    lastPrint = null;
+    loadSessions();
+  },
+  onOpen: (id) => selectSession(id),
+});
 // Once, at load, and not polled: all this does is put a dot on the Updates tab
 // so somebody finds out there is a new release without having gone looking.
 // The daemon already asked GitHub; this asks the daemon.

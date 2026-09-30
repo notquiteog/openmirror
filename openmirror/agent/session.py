@@ -85,6 +85,7 @@ from openmirror.providers.base import (
     ToolUseBlock,
 )
 from openmirror.providers.reasoning import normalise
+from openmirror.titles import needs_title, title_for
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,12 @@ COMMANDS = {
     'clear': 'Forget the conversation and start again, in the same session and folder.',
     'think': 'How hard the model thinks from now on: off, low, medium, high, xhigh, max, or default. '
              'On its own, says what it is now.',
+    'model': 'Which model answers from the next turn on: /model anthropic, /model gpt-5, or just /model '
+             'to be told what is in use.',
+    'undo': 'Put the last turn\'s file changes back. Repeatable; /redo puts them back again.',
+    'redo': 'Put back what the last /undo took away.',
+    'context': 'How full the context window is, and what is in the conversation.',
+    'status': 'Everything about this session in one block: model, mode, tools, folder, size.',
 }
 
 _SLASH = re.compile(r'/([A-Za-z0-9_:-]+)(?:\s+(.*))?$', re.S)
@@ -131,6 +138,28 @@ def _slash(text: str) -> tuple[str, str]:
     if not match:
         return '', ''
     return match.group(1).lower(), (match.group(2) or '').strip()
+
+
+def _model_want(text: str) -> tuple[str, str]:
+    """What `/model` was asked for, as (provider, model).
+
+    Three shapes, because three are what people type: `gpt-5` (one word, could
+    be either), `anthropic claude-sonnet-5` (a provider then a model), and
+    `openrouter/anthropic/claude-sonnet-5` (a model with its route baked in,
+    which is how every gateway spells one). The first shape comes back as two
+    empties, so the caller can decide — deciding here would mean answering the
+    question with a guess.
+    """
+    if '/' in text:
+        # A routed id. The provider is the first segment only if the rest is
+        # not itself a model path, which is why the whole thing is also tried
+        # verbatim by the caller when a provider was named.
+        head, _, rest = text.partition('/')
+        return head, rest
+    parts = text.split()
+    if len(parts) >= 2:
+        return parts[0], ' '.join(parts[1:])
+    return '', ''
 
 
 @dataclass(slots=True)
@@ -770,6 +799,138 @@ class AgentSession:
             session_id=self.id, mode=self.policy.mode.value, policy=self.policy.describe(), effort=self.effort,
         ))
 
+    # -- /model, /undo, /redo, /context, /status ----------------------------
+
+    async def set_model(self, want: str) -> tuple[str, str]:
+        """Change which model answers, from the next request on.
+
+        Returns `(provider, model)`. The reason this is a live control and not
+        a thing you pick when you open a tab: you find out you are on the wrong
+        model while watching it work, not while filling in a dialog, and
+        switching means losing the conversation — which is a much worse price
+        than the one `/model` charges.
+
+        The reasoning level is deliberately left alone. It is one dial for every
+        provider, each adapter spelling it the way its host accepts, so a
+        session that set `high` on one model and moves to another keeps asking
+        for `high` and the new provider decides what that means.
+        """
+        from openmirror.providers.registry import resolve_chat
+
+        want = want.strip()
+        if not want:
+            raise ValueError('say which model: /model anthropic, /model gpt-5, or a full id')
+        provider, model = _model_want(want)
+        try:
+            impl, chosen, provider_id = await resolve_chat(provider or None, model or None)
+        except Exception:
+            # One word could be either: a provider ("anthropic") or a model on
+            # the provider already in use ("gpt-5"). Asking as a provider first
+            # and falling back to a model is the order people mean, and the
+            # refusal that comes back from both is the honest answer.
+            if provider:
+                raise
+            impl, chosen, provider_id = await resolve_chat(None, want)
+        self.provider = impl
+        self.model = chosen
+        await self._emit(PolicyChanged(
+            session_id=self.id, mode=self.policy.mode.value, policy=self.policy.describe(),
+            effort=self.effort, model=chosen, provider=provider_id,
+        ))
+        return provider_id, chosen
+
+    async def _model_command(self, arguments: str) -> str:
+        if not arguments:
+            return f'Model: {self.model} on {self._provider_name()}. /model <name> to change it.'
+        provider_id, model = await self.set_model(arguments)
+        return f'Model: {model} on {provider_id}, from the next turn.'
+
+    def _provider_name(self) -> str:
+        """The provider's own name for itself, for a human to read.
+
+        Adapters are not required to carry an `id`, and the ones that do
+        disagree with the registry's spelling, so this asks the object and
+        falls back rather than inventing a third answer.
+        """
+        for attr in ('id', 'name', 'provider_id'):
+            value = getattr(self.provider, attr, None)
+            if isinstance(value, str) and value:
+                return value
+        return type(self.provider).__name__.replace('Provider', '').lower() or 'this provider'
+
+    async def _rewind_command(self, name: str) -> str:
+        if self.checkpoints is None:
+            return 'This session has no undo history — checkpoints are off.'
+        if name == 'undo':
+            rewind = self.checkpoints.undo_latest()
+            if rewind is None:
+                return 'Nothing to undo: no turn has changed a file yet.'
+        else:
+            rewind = self.checkpoints.redo_last()
+            if rewind is None:
+                return 'Nothing to redo. /undo first, or start a turn that changes a file.'
+
+        report = rewind.report
+        lines = [
+            f'{"Redid" if rewind.redone else "Undid"} {rewind.touched} '
+            f'file{"" if rewind.touched == 1 else "s"}: {_clip(rewind.label, 70)}'
+        ]
+        for key in report.restored[:8]:
+            lines.append(f'  restored  {key}')
+        for key in report.deleted[:8]:
+            lines.append(f'  deleted   {key}')
+        if report.changed_since:
+            # Said plainly, because it is true and it is destructive: the file
+            # was edited by hand after the turn finished, and reverting it
+            # replaced that edit. The rewind dialog can be read before it is
+            # confirmed; a command cannot, so the words have to carry it.
+            lines.append(
+                f'  overwritten: {", ".join(report.changed_since[:4])} — edited by hand after the '
+                'turn, and reverting replaced that edit'
+            )
+        if report.skipped:
+            for key, why in list(report.skipped.items())[:4]:
+                lines.append(f'  skipped   {key}: {why}')
+        return '\n'.join(lines)
+
+    def _context_command(self) -> str:
+        report = self.context_report()
+        window = report.window or 0
+        limit = report.limit or 0
+        measured = 'the provider' if report.exact else 'an estimate of 4 characters a token'
+        headline = f'Context: {report.tokens:,} tokens'
+        if window:
+            headline += f' of a {window:,} window ({report.tokens / window:.0%})'
+        lines = [headline, f'  counted by {measured}']
+        if limit:
+            when = 'now' if report.tokens >= limit else f'in {limit - report.tokens:,}'
+            lines.append(f'  summarises at {limit:,} — {when}')
+        lines.append(f'  session totals: {report.total_in:,} in, {report.total_out:,} out')
+        lines.append(f'  conversation: {len(self.messages)} messages, {len(self.tools)} tools')
+        if window and report.tokens > window * 0.85:
+            lines.append('  /compact to make room before the next turn.')
+        return '\n'.join(lines)
+
+    def _status_command(self) -> str:
+        store = 'on' if self.store is not None else 'off'
+        memory = 'on' if self.context_provider else 'off'
+        thinking = self.effort or 'the model’s own default'
+        offered = len(self._visible_tools()) if self.tools else 0
+        undo = self.checkpoints.undo_count() if self.checkpoints else 0
+        redo = self.checkpoints.redo_count() if self.checkpoints else 0
+        return '\n'.join([
+            f'Session {self.id} — {self.title or self.root.name}',
+            f'  folder    {self.root}',
+            f'  model     {self.model} on {self._provider_name()}',
+            f'  thinking  {thinking}',
+            f'  approval  {self.policy.mode.value}',
+            f'  tools     {len(self.tools)}' + (f' ({offered} offered)' if offered else ''),
+            f'  messages  {len(self.messages)}',
+            f'  undo      {undo} turn(s) to undo, {redo} to redo',
+            f'  skills    {len(self.skills)}',
+            f'  transcript {store}, memories {memory}',
+        ])
+
     # -- the loop -----------------------------------------------------------
 
     async def _run_turn(
@@ -823,6 +984,18 @@ class AgentSession:
 
         self._repeats = {}
         self._fresh_summary = False
+
+        # The first message names the conversation, but only while it is still
+        # holding the folder's name. A title set by a person, or already
+        # derived from an earlier message, is theirs to keep — and the check
+        # is cheap enough to run every turn, which is what stops it needing to
+        # know whether this is the first one.
+        if needs_title(self.title, self.root.name):
+            self.title = title_for(text, fallback=self.title or self.root.name)
+            # Fire and forget, like the auto-learn bookkeeping above: a title
+            # that reaches disk a few milliseconds late is still correct, and
+            # nothing in this turn is waiting on it.
+            asyncio.create_task(self._persist())
 
         blocks: list[Any] = [TextBlock(text=prompt or text)]
         for att in attachments:
@@ -1500,6 +1673,14 @@ class AgentSession:
                     await self.set_effort(arguments.split()[0])
                 now = self.effort or "the model's own default"
                 await self._emit(TextDelta(session_id=self.id, turn_id=turn_id, text=f'Thinking: {now}.'))
+            elif name == 'model':
+                await self._emit(TextDelta(session_id=self.id, turn_id=turn_id, text=await self._model_command(arguments)))
+            elif name in ('undo', 'redo'):
+                await self._emit(TextDelta(session_id=self.id, turn_id=turn_id, text=await self._rewind_command(name)))
+            elif name == 'context':
+                await self._emit(TextDelta(session_id=self.id, turn_id=turn_id, text=self._context_command()))
+            elif name == 'status':
+                await self._emit(TextDelta(session_id=self.id, turn_id=turn_id, text=self._status_command()))
         except asyncio.CancelledError:
             await self._emit(TurnCompleted(session_id=self.id, turn_id=turn_id, stop_reason='interrupted'))
             raise

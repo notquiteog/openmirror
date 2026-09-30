@@ -33,7 +33,6 @@ const state = {
   lastFetched: '',
   sessionId: () => null,
   request: null,
-  request: null,
 };
 
 /* The one keydown handler, asked about this list first.

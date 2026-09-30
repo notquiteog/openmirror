@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -219,3 +220,84 @@ async def test_every_event_is_numbered():
 
         seqs = [e.seq for e in await collect(s)]
         assert seqs == list(range(1, len(seqs) + 1)), seqs
+
+
+# --- the undo history is one session's ---------------------------------------
+#
+# Found by running it, not by reading it: `openmirror run -c -p /undo` said
+# "Nothing to undo" on a session that had just written a file. Two causes, both
+# here, and the second one is the worse of the two because nothing about it
+# looks wrong from inside the session you are looking at.
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_do_not_share_an_undo_history():
+    """The store's directory was keyed on a `session_id` that did not exist yet,
+    so it was the literal string 'session' — one directory, one undo history,
+    every conversation on the machine. `/undo` here would have put back a turn
+    that happened in a different session, about a file this one never touched.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        m = SessionManager()
+        one = await m.create(root=tmp, provider=ScriptedProvider([[StreamDone()]]), model='x', mode=Mode.ASK)
+        two = await m.create(root=tmp, provider=ScriptedProvider([[StreamDone()]]), model='x', mode=Mode.ASK)
+        assert one.checkpoints is not None and two.checkpoints is not None
+        assert one.checkpoints.root != two.checkpoints.root, 'one shared directory'
+        assert one.checkpoints.undo_count() == 0
+        assert two.checkpoints.undo_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_sessions_undo_history_is_not_another_sessions():
+    """The same bug, from the side that bites: one session's turn must not
+    appear in another session's rewind list."""
+    with tempfile.TemporaryDirectory() as tmp:
+        m = SessionManager()
+        one = await m.create(root=tmp, provider=ScriptedProvider([[StreamDone()]]), model='x', mode=Mode.ASK)
+        two = await m.create(root=tmp, provider=ScriptedProvider([[StreamDone()]]), model='x', mode=Mode.ASK)
+
+        target = Path(tmp) / 'only-mine.txt'
+        target.write_text('before\n')
+        one.checkpoints.begin('t1', 'my turn')
+        one.checkpoints.record(target)
+        target.write_text('after\n')
+        one.checkpoints.commit()
+
+        assert one.checkpoints.undo_count() == 1
+        assert two.checkpoints.undo_count() == 0, 'and it must stay that way'
+        assert two.checkpoints.undo_latest() is None
+        assert target.read_text() == 'after\n', 'the other session cannot touch it'
+
+
+@pytest.mark.asyncio
+async def test_the_undo_directory_is_named_after_the_session():
+    """So a resume finds it. The store is rebuilt from the id, and a directory
+    named after something else is a resume that cannot undo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        m = SessionManager()
+        s = await m.create(root=tmp, provider=ScriptedProvider([[StreamDone()]]), model='x', mode=Mode.ASK)
+        assert s.checkpoints.root.name == s.id
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_session_keeps_its_undo_history():
+    """The end of the whole chain: write a file, close, resume, undo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        m = SessionManager()
+        provider = ScriptedProvider([[StreamDone()]] * 4)
+        first = await m.create(root=tmp, provider=provider, model='x', mode=Mode.AUTO_EDIT)
+        target = Path(tmp) / 'a.txt'
+        target.write_text('before\n')
+        first.checkpoints.begin('t1', 'edit a')
+        first.checkpoints.record(target)
+        target.write_text('after\n')
+        first.checkpoints.commit()
+        assert first.id
+
+        again = await m.create(
+            root=tmp, provider=provider, model='x', mode=Mode.AUTO_EDIT, session_id=first.id,
+        )
+        assert again.id == first.id
+        assert again.checkpoints.undo_count() == 1
+        assert again.checkpoints.undo_latest() is not None
+        assert target.read_text() == 'before\n'

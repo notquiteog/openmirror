@@ -292,6 +292,12 @@ class PolicyChanged(_Event):
     # The thinking level, carried on every change of either control so a
     # client never has to remember one to render the other.
     effort: str | None = None
+    # And the model, for the same reason: `/model` moves all three at once, and
+    # a client that showed a stale model chip after a switch would be showing
+    # the one thing the person just changed. `None` on a mode change means
+    # "the model did not move", not "there is no model".
+    model: str | None = None
+    provider: str | None = None
 
 
 class TaskUpdated(_Event):
