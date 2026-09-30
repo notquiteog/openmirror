@@ -29,6 +29,8 @@
   <symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 2 13 4v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/></symbol>
   <symbol id="i-mic" viewBox="0 0 16 16"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><path d="M8 12v2"/></symbol>
   <symbol id="i-send" viewBox="0 0 16 16"><path d="M8 12.5v-9"/><path d="M4.5 7 8 3.5 11.5 7"/></symbol>
+  <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8"/><path d="M12 4l-8 8"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 16 16"><path d="M11 7.5 7 11.5a2.1 2.1 0 0 1-3-3l4.6-4.6a3.5 3.5 0 0 1 5 5L8.2 14.3a4.9 4.9 0 0 1-7-7L6.6 2.9"/></symbol>
   <symbol id="i-chat" viewBox="0 0 16 16"><path d="M13.5 8.5c0 2.2-2.5 4-5.5 4a7 7 0 0 1-1.6-.2L3 13.5l.8-2.3A4.3 4.3 0 0 1 2.5 8.5c0-2.2 2.5-4 5.5-4s5.5 1.8 5.5 4Z"/></symbol>
   <symbol id="i-code" viewBox="0 0 16 16"><path d="M5.5 4.5 2 8l3.5 3.5"/><path d="M10.5 4.5 14 8l-3.5 3.5"/><path d="M9.2 3 6.8 13"/></symbol>
   <symbol id="i-wave" viewBox="0 0 16 16"><path d="M2 8h1.5"/><path d="M5 5.5v5"/><path d="M7.5 3v10"/><path d="M10 5.5v5"/><path d="M12.5 6.8v2.4"/><path d="M14.5 8H14"/></symbol>
@@ -105,6 +107,11 @@
 
   <div id="session-pane">
     <div class="sec-head"><span>Sessions</span></div>
+    <!-- Search reaches the closed conversations too, not just the ones the
+         live list holds — which on a machine that has been working all week is
+         the only place the answer is. Escape or an emptied box puts the
+         ordinary list back. -->
+    <input id="session-search" type="search" placeholder="Search every conversation…" aria-label="Search conversations" autocomplete="off">
     <ul id="sessions" aria-label="Sessions"></ul>
   </div>
 
@@ -200,6 +207,9 @@
     <div id="field">
       <ul id="slash" role="listbox" aria-label="Commands and skills" hidden></ul>
       <ul id="files" role="listbox" aria-label="Files to mention" hidden></ul>
+      <!-- Pictures pasted or dropped into the composer, with a way to take each
+           one back out. Hidden when empty, which is most of the time. -->
+      <div id="attachments" aria-label="Attached pictures" hidden></div>
       <textarea id="input" rows="1" placeholder="Ask it to do something, or / for commands and skills…  (Enter to send, Shift+Enter for a newline)" disabled></textarea>
       <div id="controls">
         <!-- The buddy, at thumbnail size, saying what it is doing in words.
@@ -221,6 +231,9 @@
         </label>
         <div class="spacer"></div>
         <span id="model-chip" class="chip flat" hidden></span>
+        <button id="attach" type="button" class="icon" title="Attach a picture (or just paste one)">
+          <svg class="ic"><use href="#i-clip"></use></svg>
+        </button>
         <button id="voice-toggle" type="button" class="icon" disabled title="Start voice">
           <svg class="ic"><use href="#i-mic"></use></svg>
         </button>

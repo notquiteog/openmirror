@@ -263,8 +263,15 @@ def test_the_send_button_stays_available_while_a_turn_runs():
 
 def test_composer_submit_does_not_refuse_while_busy():
     """The other half: the keyboard path had the same check, so Enter did
-    nothing mid-turn either."""
+    nothing mid-turn either.
+
+    Asserted as "a turn.submit goes out and nothing guards on busy" rather than
+    on one exact call, because the send is now two shapes — with attachments and
+    without — and a test pinned to the older literal would fail on the shape
+    rather than on the behaviour it is about.
+    """
     submit = APP[APP.index("$('#composer').addEventListener('submit'"):]
     submit = submit[:submit.index("\n  });")]
     assert 'state.busy) return' not in submit
-    assert "send({ type: 'turn.submit', text })" in submit
+    assert "type: 'turn.submit'" in submit
+    assert 'send(' in submit

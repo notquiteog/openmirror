@@ -212,14 +212,70 @@ def test_no_module_interpolates_the_session_id_function():
 
 def test_every_module_handed_the_session_id_calls_it_before_using_it():
     """The same rule from the other end: anything that builds a `/api/sessions/`
-    URL needs a way to get the id, and the only correct way is a call."""
+    URL needs a way to get the id, and the only correct way is a call.
+
+    A module may say so in its own header, in the same shape `test_tor.py`
+    uses for its transport scan: `session-id-exempt:` followed by a reason long
+    enough to be one. The exemption is for a module that gets its ids as
+    *parameters* — a search result, a resume response — which is the opposite
+    of the bug rather than an instance of it. An exemption nobody can review is
+    one the next reader assumes was load-bearing, so the reason has to be
+    there and has to be a sentence.
+    """
+    marker = 'session-id-exempt:'
+    min_reason = 40
+    offenders: list[str] = []
+    exempted: dict[str, str] = {}
     for path in sorted(STATIC.rglob('*.js')):
         text = path.read_text()
         if '/api/sessions/${' not in text:
             continue
-        assert 'currentSession(' in text, (
-            f'{path.name} builds a session URL with no way to get the id'
+        if 'currentSession(' in text:
+            continue
+        reason = _exemption(text, marker)
+        if len(reason) < min_reason:
+            offenders.append(
+                f'{path.name}: builds a session URL with no way to get the id'
+                + (f', and its {marker} note is too short to review' if reason else '')
+            )
+        else:
+            exempted[path.name] = reason
+    assert not offenders, 'these build a session URL with no way to get the id:\n  ' + '\n  '.join(offenders)
+
+
+def _exemption(text: str, marker: str) -> str:
+    """The text after `marker` in the module's own header comment, if any."""
+    head = text[:4000]
+    at = head.find(marker)
+    if at < 0:
+        return ''
+    tail = head[at + len(marker):]
+    # Stop at the next sentence, so what is read is the reason and not the
+    # rest of the file.
+    for stop in ('\n', '. ', '.\n'):
+        cut = tail.find(stop)
+        if cut >= 0:
+            tail = tail[:cut]
+    return ' '.join(tail.split())
+
+
+def test_the_session_id_exemption_is_not_vacuous():
+    """A guard that exempts everything, or that nobody uses, is a guard that
+    looks like a check and is not one. Both of those are failures: the first
+    silently stops catching the bug, the second means the mechanism was added
+    for nothing."""
+    marker = 'session-id-exempt:'
+    used = {
+        path.name: _exemption(path.read_text(), marker)
+        for path in sorted(STATIC.rglob('*.js'))
+        if marker in path.read_text()
+    }
+    assert used, 'the exemption mechanism is documented and never used'
+    for name, reason in used.items():
+        assert 'currentSession(' not in (STATIC / name).read_text(), (
+            f'{name} claims an exemption and does the thing it is exempt from'
         )
+        assert len(reason) >= 40, f'{name}: its exemption is not a reason'
 
 
 def test_every_module_handed_the_session_id_is_handed_the_function():

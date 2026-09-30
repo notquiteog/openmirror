@@ -305,6 +305,44 @@ button.sec-head:hover { color: var(--dim); background: none; }
 #sessions .state.busy { background: var(--accent); opacity: 1; animation: pulse 1.6s ease-in-out infinite; }
 #sessions .state.waiting { background: var(--warn); opacity: 1; }
 
+/* Searching every conversation. Sits inside the pane rather than in a dialog,
+   so the list it replaces is the list it is replacing — you are looking at the
+   same rail, filtered, and Escape puts it back. */
+#session-search {
+  display: block; width: calc(100% - 18px); margin: 0 9px 6px;
+  padding: 6px 9px; font: inherit; font-size: 12.5px;
+  color: var(--ink); background: var(--glass);
+  border: 1px solid var(--edge); border-radius: var(--radius-sm);
+}
+#session-search:focus {
+  outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--edge));
+}
+#session-search::placeholder { color: var(--faint); }
+#session-search::-webkit-search-cancel-button { filter: grayscale(1) opacity(.5); }
+
+/* A hit wraps: the line with the match in it is the whole point, and a hit is
+   usually longer than a sidebar row is wide. */
+#sessions li.hit { flex-wrap: wrap; align-items: baseline; }
+#sessions .hit .name { flex: 1; }
+#sessions .excerpt {
+  flex: 1 0 100%; font-size: 11.5px; line-height: 1.45; color: var(--dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#sessions .excerpt mark { background: color-mix(in srgb, var(--accent) 26%, transparent); color: var(--ink); }
+#sessions .where { color: var(--faint); font-size: 11px; flex: none; }
+#sessions .share {
+  flex: none; font: inherit; font-size: 10.5px; color: var(--faint);
+  background: none; border: 1px solid var(--edge); border-radius: 6px;
+  padding: 1px 6px; cursor: pointer; opacity: 0;
+}
+#sessions li.hit:hover .share, #sessions .share:focus { opacity: 1; }
+#sessions .share:hover { color: var(--ink); background: var(--raise); }
+#sessions li.empty {
+  color: var(--faint); font-size: 12px; cursor: default; line-height: 1.5;
+}
+#sessions li.empty:hover { background: none; }
+
 @keyframes pulse { 50% { opacity: .35; } }
 
 #foot { border-top: 1px solid var(--edge-soft); padding: 4px 0 8px; }
@@ -661,6 +699,35 @@ body.blank #composer { border-top: none; background: transparent; }
   border-color: color-mix(in srgb, var(--accent) 45%, var(--edge));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
+
+/* A picture is being dropped on the field, so say so before the drop rather
+   than after. The dashed edge is the whole message; the accent is what makes
+   it visible over a screenshot dragged in front of the page. */
+#field.dropping {
+  border-color: var(--accent);
+  border-style: dashed;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Pictures waiting on the composer. A strip rather than a row of buttons,
+   because the only question it answers is "what am I about to send". */
+#attachments {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 2px 2px;
+}
+#attachments .attach {
+  position: relative; display: flex; align-items: center; gap: 7px;
+  padding: 4px 8px 4px 4px;
+  background: var(--glass); border: 1px solid var(--edge); border-radius: 10px;
+  font-size: 11px; color: var(--dim);
+}
+#attachments .thumb {
+  width: 34px; height: 34px; object-fit: cover; border-radius: 7px;
+  background: var(--hover); display: block;
+}
+#attachments .size { font-family: var(--mono); white-space: nowrap; }
+#attachments .attach .icon { width: 22px; height: 22px; border-radius: 6px; color: var(--faint); }
+#attachments .attach .icon:hover { color: var(--ink); background: var(--hover); }
+#attachments .attach-error { flex: 1 0 100%; margin: 0; font-size: 11.5px; color: var(--warn); }
 
 #input {
   display: block; width: 100%; resize: none; max-height: 40vh;
