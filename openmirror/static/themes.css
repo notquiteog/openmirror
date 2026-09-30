@@ -1,0 +1,282 @@
+/* Themes.
+ *
+ * The whole of the visual system is thirty custom properties on `:root` and
+ * the glass on top of them, so a theme is thirty values and nothing else.
+ * That is the reason this is a data file rather than a stylesheet: a theme
+ * that has to be *written* is a theme nobody writes, and a theme that
+ * overrides only the accents looks like the same interface in a different
+ * colour, which is not what anybody means by a theme.
+ *
+ * **A theme is the ground and the glass, not the accents alone.** The glass
+ * reads whatever is behind it, so a warm ground makes every panel warm whether
+ * or not a single `--glass` value changed. Getting that wrong is how a theme
+ * ends up looking like a bug in the contrast rather than a choice.
+ *
+ * `auto` follows the system and is the default, because a theme that
+ * overrides the system's own dark mode is a theme that also overrides
+ * somebody's night-time setting — and the two are not the same thing.
+ */
+
+:root {
+  --theme-ground: transparent;   /* the ground under the glass */
+  --theme-surface: transparent; /* an opaque fallback where the ground cannot be drawn */
+}
+
+html[data-theme='auto'] { color-scheme: light dark; }
+html[data-theme='light'] { color-scheme: light; }
+html[data-theme='dark'] { color-scheme: dark; }
+
+/* --- light ------------------------------------------------------------------ */
+
+html[data-theme='light'] {
+  --bg: #eceff6;
+  --bg-tint-a: #7c9df0;
+  --bg-tint-b: #b98bd9;
+  --bg-tint-c: #6fc3d6;
+  --grid: rgba(90, 105, 145, 0.16);
+
+  --glass: rgba(252, 253, 255, 0.88);
+  --glass-strong: rgba(255, 255, 255, 0.95);
+  --glass-weak: rgba(250, 251, 255, 0.66);
+  --raise: rgba(255, 255, 255, 0.55);
+  --edge: rgba(120, 130, 160, 0.18);
+  --edge-soft: rgba(120, 130, 160, 0.11);
+  --hover: rgba(90, 105, 140, 0.09);
+
+  --ink: #10121a;
+  --dim: #565d70;
+  --faint: #858da3;
+  --accent: #3a5fce;
+  --ok: #1f8f5f;
+  --warn: #9a6c12;
+  --danger: #bf3c30;
+
+  --solid: #ffffff;
+  --on-solid: #10121a;
+  --shadow: 0 6px 24px rgba(28, 34, 54, 0.12), 0 1px 2px rgba(28, 34, 54, 0.10);
+  --shadow-lift: 0 28px 80px rgba(28, 34, 54, 0.20);
+}
+
+/* --- dark ------------------------------------------------------------------- */
+
+html[data-theme='dark'] {
+  --bg: #0a0a0d;
+  --bg-tint-a: #3a5db8;
+  --bg-tint-b: #6d3f96;
+  --bg-tint-c: #1f6b7d;
+  --grid: rgba(150, 170, 235, 0.10);
+
+  --glass: rgba(19, 19, 24, 0.90);
+  --glass-strong: rgba(26, 26, 33, 0.95);
+  --glass-weak: rgba(15, 15, 19, 0.74);
+  --raise: rgba(255, 255, 255, 0.035);
+  --edge: rgba(255, 255, 255, 0.09);
+  --edge-soft: rgba(255, 255, 255, 0.055);
+  --hover: rgba(255, 255, 255, 0.055);
+
+  --ink: #ececf1;
+  --dim: #8d8d99;
+  --faint: #63636f;
+  --accent: #8aa7f5;
+  --ok: #5ac68e;
+  --warn: #dfae52;
+  --danger: #ef7365;
+
+  --solid: #f0f0f4;
+  --on-solid: #16161b;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.36), 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-lift: 0 28px 80px rgba(0, 0, 0, 0.60);
+}
+
+/* --- warm -------------------------------------------------------------------
+   A light ground that is actually warm. The point of shipping one of these is
+   that it changes what the glass *reads*: every panel picks up the cast
+   without a single `--glass` value being different. */
+
+html[data-theme='warm'] {
+  color-scheme: light;
+  --bg: #f6efe4;
+  --bg-tint-a: #e0a878;
+  --bg-tint-b: #cf8f9c;
+  --bg-tint-c: #e3c07a;
+  --grid: rgba(150, 120, 80, 0.14);
+
+  --glass: rgba(253, 248, 240, 0.88);
+  --glass-strong: rgba(255, 252, 246, 0.95);
+  --glass-weak: rgba(251, 245, 235, 0.66);
+  --raise: rgba(255, 250, 240, 0.55);
+  --edge: rgba(150, 120, 85, 0.20);
+  --edge-soft: rgba(150, 120, 85, 0.12);
+  --hover: rgba(140, 105, 70, 0.09);
+
+  --ink: #241a12;
+  --dim: #6b5645;
+  --faint: #9a8674;
+  --accent: #b5651d;
+  --ok: #4a7c2f;
+  --warn: #a3750a;
+  --danger: #b03a26;
+
+  --solid: #fffaf2;
+  --on-solid: #241a12;
+  --shadow: 0 6px 24px rgba(90, 66, 40, 0.14), 0 1px 2px rgba(90, 66, 40, 0.12);
+  --shadow-lift: 0 28px 80px rgba(90, 66, 40, 0.22);
+}
+
+/* --- night ------------------------------------------------------------------
+   Darker than `dark`, and not a tint: a very dark blue that stays neutral
+   under the glass, so text is the only coloured thing on screen. For a person
+   who leaves this open all day. */
+
+html[data-theme='night'] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-tint-a: #1c2a4a;
+  --bg-tint-b: #2a1c3d;
+  --bg-tint-c: #123038;
+  --grid: rgba(150, 170, 235, 0.07);
+
+  --glass: rgba(12, 12, 15, 0.93);
+  --glass-strong: rgba(20, 20, 25, 0.96);
+  --glass-weak: rgba(8, 8, 11, 0.78);
+  --raise: rgba(255, 255, 255, 0.028);
+  --edge: rgba(255, 255, 255, 0.10);
+  --edge-soft: rgba(255, 255, 255, 0.06);
+  --hover: rgba(255, 255, 255, 0.05);
+
+  --ink: #e8e8ee;
+  --dim: #83838f;
+  --faint: #5a5a66;
+  --accent: #7f9fe8;
+  --ok: #4fbd85;
+  --warn: #d8a44a;
+  --danger: #e8685a;
+
+  --solid: #ececf2;
+  --on-solid: #0b0b0e;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.60), 0 1px 2px rgba(0, 0, 0, 0.50);
+  --shadow-lift: 0 28px 80px rgba(0, 0, 0, 0.80);
+}
+
+/* --- forest -----------------------------------------------------------------
+   A dark ground that is green rather than blue, and a *muted* accent: the
+   point is that the interface stops being the brightest thing on screen. */
+
+html[data-theme='forest'] {
+  color-scheme: dark;
+  --bg: #0a110d;
+  --bg-tint-a: #24513a;
+  --bg-tint-b: #1d4a3f;
+  --bg-tint-c: #3d5230;
+  --grid: rgba(160, 200, 170, 0.08);
+
+  --glass: rgba(14, 24, 19, 0.90);
+  --glass-strong: rgba(20, 33, 26, 0.95);
+  --glass-weak: rgba(10, 18, 14, 0.74);
+  --raise: rgba(210, 255, 225, 0.030);
+  --edge: rgba(210, 255, 225, 0.09);
+  --edge-soft: rgba(210, 255, 225, 0.055);
+  --hover: rgba(210, 255, 225, 0.055);
+
+  --ink: #e4efe8;
+  --dim: #93a89b;
+  --faint: #66796c;
+  --accent: #6fbf90;
+  --ok: #79d3a2;
+  --warn: #d6b264;
+  --danger: #e0796a;
+
+  --solid: #eaf5ee;
+  --on-solid: #0a110d;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.40), 0 1px 2px rgba(0, 0, 0, 0.34);
+  --shadow-lift: 0 28px 80px rgba(0, 0, 0, 0.64);
+}
+
+/* --- no ground -------------------------------------------------------------
+   Flat, and therefore the one theme where the glass is not glass. The
+   background is a single flat colour and every panel is an opaque card.
+
+   For a machine that is doing something else, or for somebody whose display
+   is calibrated and who would rather the interface did not tint it. */
+
+html[data-theme='flat'] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-tint-a: transparent;
+  --bg-tint-b: transparent;
+  --bg-tint-c: transparent;
+  --grid: transparent;
+
+  --glass: #ffffff;
+  --glass-strong: #ffffff;
+  --glass-weak: #f4f4f6;
+  --raise: #f0f0f3;
+  --edge: rgba(0, 0, 0, 0.14);
+  --edge-soft: rgba(0, 0, 0, 0.08);
+  --hover: rgba(0, 0, 0, 0.05);
+
+  --ink: #16161a;
+  --dim: #55555f;
+  --faint: #85858f;
+  --accent: #2c53c4;
+  --ok: #147a4d;
+  --warn: #8a6008;
+  --danger: #b32f22;
+
+  --solid: #ffffff;
+  --on-solid: #16161a;
+  --shadow: none;
+  --shadow-lift: 0 12px 40px rgba(0, 0, 0, 0.14);
+}
+
+/* --- high contrast ---------------------------------------------------------
+ *
+ * Not a colour theme and deliberately not in the row above: the person who
+ * needs this needs it *on top of* whichever colour they chose. It thickens
+ * every edge, removes the tints, and takes the glass away entirely, because
+ * translucency over a photograph is exactly the thing a high-contrast setting
+ * exists to stop.
+ */
+
+html[data-contrast='high'] {
+  --tint-opacity: 0;
+  --detail-opacity: 0;
+  --grid: transparent;
+}
+
+html[data-contrast='high'] {
+  --glass: var(--solid);
+  --glass-strong: var(--solid);
+  --glass-weak: var(--solid);
+  --raise: var(--solid);
+  --edge: currentColor;
+  --edge-soft: currentColor;
+  --hover: var(--glass-weak);
+  --faint: var(--dim);
+  --shadow: none;
+  --shadow-lift: none;
+}
+
+/* The blur is the expensive part as well as the pretty part: a panel that
+   blurs has to re-raster whatever is behind it, so a high-contrast setting
+   that leaves the blur on has paid for the most expensive thing in the
+   interface and got nothing for it. */
+html[data-contrast='high'] #bar,
+html[data-contrast='high'] #composer,
+html[data-contrast='high'] .panel,
+html[data-contrast='high'] dialog {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-contrast='high'] body::after { animation: none; }
+
+/* Borders rather than shadows, everywhere a shadow was carrying an edge. */
+html[data-contrast='high'] .tool,
+html[data-contrast='high'] .turn,
+html[data-contrast='high'] .mail-row,
+html[data-contrast='high'] .hook-row,
+html[data-contrast='high'] .wt-row,
+html[data-contrast='high'] .review-hunk {
+  border-width: 1px;
+}

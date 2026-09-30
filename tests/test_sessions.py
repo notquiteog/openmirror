@@ -406,3 +406,79 @@ def test_a_transcript_outlives_a_restart_even_after_a_partial_write(tmp_path):
     # And appending again picks up after what survived, rather than duplicating.
     again.save(back)
     assert len(again.load('abc123').messages) == 3
+
+
+# --- forking ------------------------------------------------------------------
+
+
+async def test_a_fork_is_a_conversation_from_a_point(tmp_path):
+    """The situation it is for: you asked for the wrong thing, the agent is
+    halfway down a path you no longer want, and `/clear` throws away the very
+    context that told you what to change your mind about."""
+    from openmirror.agent.manager import SessionManager
+
+    store = SessionStore(tmp_path / 's')
+    original = Stored(id='parent01', title='Refactor', root=str(tmp_path), model='gpt-4o')
+    original.messages = [
+        {'role': 'user', 'content': [{'type': 'text', 'text': f'message {n}'}]} for n in range(1, 7)
+    ]
+    store.save(original)
+
+    manager = SessionManager()
+    manager._store = store
+    forked = await manager.fork('parent01', at=3, provider=object(), model='gpt-4o', mode='ask')
+    assert forked is not None
+    assert forked.id != 'parent01', 'a fork is a new conversation, not the same one renamed'
+    assert '(fork)' in forked.title
+
+    # The parent is untouched.
+    assert len(store.load('parent01').messages) == 6
+    assert len(store.load(forked.id).messages) == 3
+    await manager.close(forked.id)
+
+
+async def test_a_fork_with_no_point_is_a_copy(tmp_path):
+    """`at: 0` means everything, which is a copy under a new name. It is a
+    legitimate thing to want and it is not a mistake."""
+    from openmirror.agent.manager import SessionManager
+
+    store = SessionStore(tmp_path / 's')
+    source = Stored(id='parent01', title='Whole thing', root=str(tmp_path), model='x')
+    source.messages = [{'role': 'user', 'content': [{'type': 'text', 'text': f'm{n}'}]} for n in range(3)]
+    store.save(source)
+
+    manager = SessionManager()
+    manager._store = store
+    forked = await manager.fork('parent01', provider=object(), model='x', mode='ask')
+    assert forked is not None
+    assert len(store.load(forked.id).messages) == 3
+    await manager.close(forked.id)
+
+
+async def test_forking_something_that_is_not_there_is_none(tmp_path):
+    from openmirror.agent.manager import SessionManager
+
+    manager = SessionManager()
+    manager._store = SessionStore(tmp_path / 's')
+    assert await manager.fork('nope', provider=object(), model='x', mode='ask') is None
+
+
+async def test_a_fork_shares_the_files_and_not_a_copy_of_them(tmp_path):
+    """A fork is a different conversation. For a different *tree* there is a
+    worktree, and pretending a fork is one would be the wrong tool offered
+    confidently."""
+    from openmirror.agent.manager import SessionManager
+
+    store = SessionStore(tmp_path / 's')
+    (tmp_path / 'a.py').write_text('shared\n')
+    source = Stored(id='parent01', title='T', root=str(tmp_path), model='x')
+    source.messages = [{'role': 'user', 'content': [{'type': 'text', 'text': 'go'}]}]
+    store.save(source)
+
+    manager = SessionManager()
+    manager._store = store
+    forked = await manager.fork('parent01', provider=object(), model='x', mode='ask')
+    assert forked is not None
+    assert forked.root == (tmp_path).resolve()
+    assert (forked.root / 'a.py').read_text() == 'shared\n'
+    await manager.close(forked.id)

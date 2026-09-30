@@ -465,6 +465,39 @@ async def resume_session(session_id: str) -> dict[str, object]:
                        'model': session.model, 'policy': session.policy.mode.value}}
 
 
+class Fork(BaseModel):
+    #: Messages to keep, counting from one. 0 means all of them, which is a
+    #: copy under a new name rather than a fork.
+    at: int = 0
+    provider: str | None = None
+    model: str | None = None
+
+
+@http.post('/{session_id}/fork')
+async def fork_session(session_id: str, body: Fork) -> dict[str, object]:
+    """A new session, holding the conversation up to a point.
+
+    For the situation where you asked for the wrong thing and the agent is
+    halfway down a path you no longer want: `/clear` throws away the context
+    that told you what to change your mind about.
+
+    The old conversation is left completely alone and the files are shared —
+    a fork is a different *conversation*. For a different *tree*, that is a
+    worktree.
+    """
+    try:
+        impl, model, _info = await _resolve_chat(body.provider, body.model)
+    except NoProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    forked = await manager.fork(
+        session_id, body.at, provider=impl, model=model, mode=config.approval_mode
+    )
+    if forked is None:
+        raise HTTPException(status_code=404, detail=f'no stored conversation called {session_id!r}')
+    return {'session': {'id': forked.id, 'title': forked.title, 'root': str(forked.root),
+                       'model': forked.model, 'policy': forked.policy.mode.value}}
+
+
 @http.get('/{session_id}/export')
 async def export_session(session_id: str) -> dict[str, object]:
     """A conversation as Markdown, to paste somewhere else.

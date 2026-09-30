@@ -1874,3 +1874,23 @@ button.ghost.danger:hover { border-color: var(--danger); }
   .gate { animation: gate-in .22s cubic-bezier(.2, .8, .3, 1); }
   @keyframes gate-in { from { opacity: 0; } to { opacity: 1; } }
 }
+
+/* --- theme picker ----------------------------------------------------------- */
+
+.theme-picker { display: flex; align-items: center; gap: 8px; padding: 4px 18px 10px; }
+.theme-row { display: flex; gap: 5px; }
+.theme-dot {
+  width: 18px; height: 18px; border-radius: 50%; cursor: pointer; padding: 0;
+  border: 1px solid var(--edge); background: var(--bg);
+  /* The dot shows the theme's own ground, and the tint, which is the thing
+     that makes a theme a theme: two themes whose dots look the same look the
+     same. */
+  box-shadow: inset 0 0 0 2px var(--bg-tint-a);
+}
+.theme-dot[data-theme='dark'], .theme-dot[data-theme='night'] { background: #0a0a0d; box-shadow: inset 0 0 0 2px #3a5db8; }
+.theme-dot[data-theme='warm'] { background: #f6efe4; box-shadow: inset 0 0 0 2px #e0a878; }
+.theme-dot[data-theme='forest'] { background: #0a110d; box-shadow: inset 0 0 0 2px #24513a; }
+.theme-dot[data-theme='flat'] { background: #fff; box-shadow: none; }
+.theme-dot:hover { border-color: var(--ink); }
+.theme-dot[aria-pressed='true'] { border-color: var(--ink); outline: 2px solid var(--accent); outline-offset: 1px; }
+#theme-name { flex: 1; }

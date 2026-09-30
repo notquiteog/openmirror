@@ -447,6 +447,31 @@ ladder, `allow_*` can only go off, `local_only` can only go on. A repository
 that ships a settings file is a repository you opened, and letting it raise
 its own safety settings would be the same hole the hooks have, one layer up.
 
+**Documents it can read.** A spreadsheet is a zip of XML and is read here,
+with the standard library — a feature that needs an install to open the file
+most people attach is a feature half the people who want it will not turn on. A
+PDF is a font-and-geometry format and is *not*: a hand-written extractor gets
+the easy cases and garbles the rest, which is worse than a refusal because it
+reads as a bug and gets quoted from. So that is an extra,
+`pip install 'openmirror[docs]'`, and the refusal names the install rather
+than calling the file binary.
+
+**Fork a conversation.** `POST /api/sessions/{id}/fork` with `at: 4` gives
+you a new session holding the first four messages, and leaves the old one
+completely alone. For the moment you asked for the wrong thing and the agent
+is halfway down a path you no longer want, and `/clear` throws away the very
+context that told you what to change your mind about. A fork is a different
+*conversation*; for a different *tree* that is a worktree.
+
+**Themes, and a high-contrast mode.** Seven of them, and the point is that a
+theme changes the **ground and the glass** rather than the accents alone — the
+glass reads whatever is behind it, so a warm ground warms every panel without
+one `--glass` value changing. `auto` follows the system and is the default,
+because a theme that overrides somebody's night-time setting is not the same
+thing as overriding their colours. High contrast is a *switch* rather than
+another dot, since the person who needs it needs it on top of whichever colour
+they chose.
+
 **A worktree per job.** `OPENMIRROR_WORKTREES=1` and a session can be put in a
 second checkout of the repository, on its own branch, where it cannot reach
 the tree you have open. That is the middle ground `unconfined` is not: a flag
@@ -871,7 +896,7 @@ meant to be that server.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-1293 tests. Some groups carry more weight than the rest.
+1550 tests. Some groups carry more weight than the rest.
 
 The shell risk classifier is tested as the security control it is: every case
 is a regression guard, and a change that moves any of them out of

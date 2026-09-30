@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>openmirror</title>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/themes.css">
+<!-- The theme, before the first paint. A module arrives after the stylesheet
+     and the page flashes the wrong theme at somebody who chose dark months
+     ago; the flash happens on every load and is the reason this is here
+     rather than in a file. Kept in step with theme.js by a test. -->
+<script>
+(function(){try{
+  var t=localStorage.getItem('openmirror.theme'); if(t)document.documentElement.dataset.theme=t;
+  if(localStorage.getItem('openmirror.contrast')==='high')document.documentElement.dataset.contrast='high';
+}catch(e){}})();
+</script>
 </head>
 <body>
 
@@ -683,6 +694,14 @@
        happen to be settings, and a person opening this has come for exactly
        one of them. The panels are `hidden` rather than styled away, so the
        tab that is not showing is also not reachable by keyboard. -->
+  <div class="sec-head"><span>Theme</span></div>
+  <div class="theme-picker">
+    <div id="theme-row" class="theme-row" role="group" aria-label="Theme"></div>
+    <span id="theme-name" class="meta">Automatic</span>
+    <button id="theme-contrast" class="ghost small" type="button"
+            title="High contrast" aria-pressed="false">Contrast</button>
+  </div>
+
   <div class="tabs" role="tablist" aria-label="Settings">
     <button class="tab" role="tab" id="tab-browser" aria-controls="panel-browser" aria-selected="true">
       <svg class="ic"><use href="#i-browser"></use></svg><span>Browser</span>

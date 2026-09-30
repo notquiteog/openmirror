@@ -32,6 +32,7 @@ import { onHookApproval, resetHooks, wireHooks } from './hooks.js';
 import { refreshWorktrees, wireWorktrees } from './worktree.js';
 import { refreshReview, resetReview, wireReview } from './review.js';
 import { renderUpdate, watchUpdates, wireUpdates } from './updates.js';
+import { wireThemes } from './theme.js';
 import { Voice } from './voice.js';
 import { narrate, refreshRuns, wireWatch } from './watch.js';
 
@@ -2295,6 +2296,7 @@ wireSearch();
 wireMail();
 wireCommit();
 wireContext();
+wireThemes();
 wireReview({ sessionId });
 wireHooks({ sessionId });
 wireWorktrees({ sessionId });

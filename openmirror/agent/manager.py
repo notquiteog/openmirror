@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -38,12 +39,19 @@ class SessionManager:
     def __init__(self) -> None:
         self._sessions: dict[str, AgentSession] = {}
         self._reaper: asyncio.Task[None] | None = None
+        # Where conversations are written. Injectable, because a test that
+        # reaches for the process-wide default is testing whatever happens to
+        # be in `data/`.
+        self._store: Any = None
 
     def store(self) -> Any:
         """The transcript store, or None when there is nowhere to write one."""
+        if self._store is not None:
+            return self._store
         from openmirror.agent.runtime import _default_store
 
-        return _default_store()
+        self._store = _default_store()
+        return self._store
 
     def stored(self, *, limit: int = 100) -> list[dict[str, Any]]:
         """Every conversation on disk, newest first.
@@ -82,16 +90,66 @@ class SessionManager:
             return None
         from openmirror.config import config as _cfg
 
+        # Popped rather than read: every one of these is named explicitly
+        # below, and `**kwargs` alongside would say it twice. The first
+        # version of this read four of them and the call raised on the first.
+        provider = kwargs.pop('provider')
+        mode = kwargs.pop('mode', Mode.ASK)
+        model = stored.model or kwargs.pop('model', '')
+        toolset = list(stored.toolset) or kwargs.pop('toolset', None)
+        kwargs.pop('model', None)
+        kwargs.pop('toolset', None)
         return await self.create(
             root=stored.root or kwargs.pop('root', _cfg.workspace),
-            provider=kwargs['provider'],
-            model=stored.model or kwargs.get('model', ''),
-            mode=kwargs.get('mode', Mode.ASK),
+            provider=provider,
+            model=model,
+            mode=mode,
             session_id=stored.id,
             title=stored.title,
-            toolset=list(stored.toolset) or kwargs.get('toolset'),
+            toolset=toolset,
             **kwargs,
         )
+
+    async def fork(self, session_id: str, at: int = 0, **kwargs: Any) -> AgentSession | None:
+        """A new session, holding the conversation up to a point.
+
+        `at` is a message number, counting the user and assistant turns from
+        one, so `at: 4` is "everything up to the fourth message". Both harnesses
+        have this and it earns its keep in one specific situation: you asked
+        for the wrong thing, the agent is halfway down a path you no longer
+        want, and `/clear` throws away the *context* that told you what to
+        change your mind about.
+
+        The new session gets a new id, the old one is left completely alone,
+        and the files on disk are shared — a fork is a different
+        *conversation*, not a different working tree. For that, see
+        `openmirror.agent.worktree`.
+        """
+        store = self.store()
+        if store is None:
+            return None
+        try:
+            source = store.load(session_id)
+        except Exception:  # noqa: BLE001
+            log.exception('session %s could not be forked', session_id)
+            return None
+        if source is None:
+            return None
+
+        cut = max(0, int(at or 0))
+        if cut and cut < len(source.messages):
+            source.messages = source.messages[:cut]
+        # A fork is finished by definition, and a title that says where it
+        # came from is the difference between two similar conversations in a
+        # list and two unrelated ones.
+        source.title = f"{source.title or session_id} (fork)" if not source.title.endswith('(fork)') \
+            else source.title
+        source.id = uuid.uuid4().hex[:16]
+        # Written under the new id *before* the session is built, so a crash
+        # between the two leaves a listed conversation rather than a live
+        # session with no transcript behind it.
+        store.save(source)
+        return await self.resume(source.id, **kwargs)
 
     async def create(
         self,

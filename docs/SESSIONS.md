@@ -13,6 +13,10 @@ small index in front of them.
   come from the transcript, not the request: a conversation about one project
   reopened in another is a conversation that will confidently edit the wrong
   files.
+* `POST /api/sessions/{id}/fork` — a new session holding the conversation up
+  to a message number. The old one is left completely alone and the files are
+  shared: a fork is a different *conversation*. `at: 0` is a copy under a new
+  name rather than a fork, which is a legitimate thing to want.
 * `GET /api/sessions/{id}/export` — Markdown, for pasting somewhere else.
 
 **What is stored, and what deliberately is not.** The messages, the title, the
@@ -88,3 +92,21 @@ An unknown key is **reported, not ignored** — a typo is otherwise invisible,
 and somebody who set `approval-mode` and got `approval_mode` would have a
 machine that quietly ignored them. `GET /api/sessions/settings` lists what
 applied, what was unknown, and what was refused.
+
+
+## How it is written
+
+One JSON file per session, **appended to**: a header line and then one line
+per message. The first version rewrote the whole transcript on every turn,
+which for an eight-hundred-message session is 89ms of script on the event
+loop — measured, and it was the only long frame in an otherwise clean turn.
+Rewriting is also just wrong at scale: a long conversation would spend more
+time copying itself than working.
+
+The write happens in a thread, because it is work nobody is waiting for — the
+answer has already been given.
+
+Appending means a turn cut off mid-write leaves every earlier line intact and
+at worst one short line, which the loader skips. That is a better bargain than
+an atomic rename, which pays for the whole file every time in order to protect
+the last turn.
