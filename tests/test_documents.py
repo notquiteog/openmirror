@@ -185,6 +185,11 @@ def test_a_pdf_with_no_text_reader_says_which_install_fixes_it(monkeypatch):
 
 
 def test_a_pdf_that_is_not_one_says_so():
+    # Skipped without the extra, because the *other* thing it can say — "you
+    # need to install pypdf" — is the correct answer in that case, and the two
+    # messages are what this test is distinguishing. CI does not install
+    # `[docs]`, which is the point of it being optional.
+    pytest.importorskip('pypdf', reason='the [docs] extra is not installed')
     from openmirror.agent.documents import read_pdf
 
     with pytest.raises(DocumentError, match='could not be opened'):
